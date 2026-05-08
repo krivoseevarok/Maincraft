@@ -1,0 +1,1104 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import json
+import random
+import math
+import uuid  # Добавляем импорт UUID
+
+class NBTEditorWindow:
+    """Окно редактирования NBT данных для предметов"""
+    def __init__(self, parent, current_nbt="", callback=None):
+        self.window = tk.Toplevel(parent)
+        self.window.title("NBT Редактор предметов")
+        self.window.geometry("800x700")
+        self.window.minsize(600, 500)
+        
+        self.callback = callback
+        self.current_nbt = self.parse_nbt_string(current_nbt) if current_nbt else {}
+        
+        self.setup_ui()
+        self.load_current_nbt()
+        
+    def parse_nbt_string(self, nbt_str):
+        """Парсит строку NBT в словарь"""
+        try:
+            if nbt_str.startswith('{') and nbt_str.endswith('}'):
+                return json.loads(nbt_str.replace(':', '":').replace('{', '{"'))
+            return {}
+        except:
+            return {}
+        
+    def dict_to_snbt(self, obj):
+        """Конвертирует словарь в SNBT формат"""
+        if isinstance(obj, dict):
+            if not obj:
+                return "{}"
+            items = []
+            for k, v in obj.items():
+                # Специальная обработка для UUID в атрибутах
+                if k == "UUID" and isinstance(v, list) and all(isinstance(x, int) for x in v):
+                    items.append(f"{k}:[I;{','.join(str(x) for x in v)}]")
+                else:
+                    items.append(f"{k}:{self.dict_to_snbt(v)}")
+            return "{" + ",".join(items) + "}"
+        elif isinstance(obj, list):
+            if not obj:
+                return "[]"
+            if all(isinstance(x, int) for x in obj):
+                return f"[I;{','.join(str(x) for x in obj)}]"
+            else:
+                items = [self.dict_to_snbt(item) for item in obj]
+                return "[" + ",".join(items) + "]"
+        elif isinstance(obj, str):
+            return f'"{obj}"'
+        elif isinstance(obj, bool):
+            return "1b" if obj else "0b"
+        elif isinstance(obj, (int, float)):
+            return str(obj)
+        else:
+            return str(obj)
+        
+    def setup_ui(self):
+        # Основной фрейм
+        main_frame = ttk.Frame(self.window, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Создаем вкладки
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Вкладка с визуальным редактором
+        self.visual_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.visual_tab, text="Визуальный редактор")
+        self.setup_visual_editor()
+        
+        # Вкладка с текстовым редактором
+        self.text_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.text_tab, text="Текстовый редактор (JSON/SNBT)")
+        self.setup_text_editor()
+        
+        # Кнопки
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=10)
+        
+        ttk.Button(button_frame, text="Применить", command=self.apply_nbt).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Отмена", command=self.window.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Очистить все", command=self.clear_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Загрузить пример", command=self.load_example).pack(side=tk.LEFT, padx=5)
+        
+    def setup_visual_editor(self):
+        """Создает визуальный редактор NBT"""
+        canvas = tk.Canvas(self.visual_tab)
+        scrollbar = ttk.Scrollbar(self.visual_tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # 1. Основная информация
+        basic_frame = ttk.LabelFrame(scrollable_frame, text="Основная информация", padding=10)
+        basic_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(basic_frame, text="Отображаемое имя (форматирование §):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.display_name = ttk.Entry(basic_frame, width=50)
+        self.display_name.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=2, padx=5)
+        
+        ttk.Label(basic_frame, text="Лор (описание, одна строка = новый абзац):").grid(row=1, column=0, sticky=tk.NW, pady=2)
+        self.lore_text = scrolledtext.ScrolledText(basic_frame, height=5, width=50)
+        self.lore_text.grid(row=1, column=1, sticky=(tk.W, tk.E), pady=2, padx=5)
+        
+        # 2. Характеристики
+        props_frame = ttk.LabelFrame(scrollable_frame, text="Характеристики", padding=10)
+        props_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.unbreakable = tk.BooleanVar()
+        ttk.Checkbutton(props_frame, text="Неразрушимый", variable=self.unbreakable).grid(row=0, column=0, sticky=tk.W, pady=2, columnspan=2)
+        
+        ttk.Label(props_frame, text="Стоимость починки:").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.repair_cost = ttk.Spinbox(props_frame, from_=0, to=100, width=20)
+        self.repair_cost.set(0)
+        self.repair_cost.grid(row=1, column=1, sticky=tk.W, pady=2, padx=5)
+        
+        self.hide_particles = tk.BooleanVar()
+        ttk.Checkbutton(props_frame, text="Скрыть частицы (при эффектах)", variable=self.hide_particles).grid(row=2, column=0, sticky=tk.W, pady=2, columnspan=2)
+        
+        # 3. Зачарования
+        enchant_frame = ttk.LabelFrame(scrollable_frame, text="Зачарования", padding=10)
+        enchant_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.enchantments_listbox = tk.Listbox(enchant_frame, height=6)
+        self.enchantments_listbox.pack(fill=tk.X, pady=5)
+        self.enchantments = []
+        
+        add_frame = ttk.Frame(enchant_frame)
+        add_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(add_frame, text="Зачарование:").pack(side=tk.LEFT, padx=2)
+        self.enchant_type = ttk.Combobox(add_frame, values=[
+            "sharpness", "protection", "efficiency", "unbreaking", "fortune",
+            "mending", "looting", "silk_touch", "fire_aspect", "knockback",
+            "power", "punch", "flame", "infinity", "luck_of_the_sea",
+            "lure", "respiration", "aqua_affinity", "thorns", "feather_falling",
+            "blast_protection", "projectile_protection", "fire_protection",
+            "smite", "bane_of_arthropods", "sweeping_edge", "loyalty",
+            "impaling", "riptide", "channeling", "multishot", "quick_charge",
+            "piercing"
+        ], width=20)
+        self.enchant_type.pack(side=tk.LEFT, padx=2)
+        
+        ttk.Label(add_frame, text="Уровень:").pack(side=tk.LEFT, padx=2)
+        self.enchant_level = ttk.Spinbox(add_frame, from_=1, to=255, width=5)
+        self.enchant_level.set(1)
+        self.enchant_level.pack(side=tk.LEFT, padx=2)
+        
+        ttk.Button(add_frame, text="Добавить", command=self.add_enchantment).pack(side=tk.LEFT, padx=5)
+        ttk.Button(add_frame, text="Удалить", command=self.remove_enchantment).pack(side=tk.LEFT, padx=2)
+        
+        # 4. Атрибуты
+        attr_frame = ttk.LabelFrame(scrollable_frame, text="Атрибуты (для инструментов и брони)", padding=10)
+        attr_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.attributes_listbox = tk.Listbox(attr_frame, height=5)
+        self.attributes_listbox.pack(fill=tk.X, pady=5)
+        self.attributes = []
+        
+        add_attr_frame = ttk.Frame(attr_frame)
+        add_attr_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(add_attr_frame, text="Атрибут:").grid(row=0, column=0, padx=2)
+        self.attr_name = ttk.Combobox(add_attr_frame, values=[
+            "generic.max_health", "generic.attack_damage", "generic.attack_speed",
+            "generic.movement_speed", "generic.knockback_resistance", "generic.armor",
+            "generic.armor_toughness", "generic.luck", "generic.attack_knockback"
+        ], width=20)
+        self.attr_name.grid(row=0, column=1, padx=2)
+        
+        ttk.Label(add_attr_frame, text="Значение:").grid(row=0, column=2, padx=2)
+        self.attr_value = ttk.Entry(add_attr_frame, width=10)
+        self.attr_value.insert(0, "1.0")
+        self.attr_value.grid(row=0, column=3, padx=2)
+        
+        ttk.Label(add_attr_frame, text="Операция:").grid(row=1, column=0, padx=2, pady=2)
+        self.attr_operation = ttk.Combobox(add_attr_frame, values=["add", "multiply_base", "multiply_total"], width=15)
+        self.attr_operation.set("add")
+        self.attr_operation.grid(row=1, column=1, padx=2, pady=2)
+        
+        ttk.Label(add_attr_frame, text="Слот:").grid(row=1, column=2, padx=2, pady=2)
+        self.attr_slot = ttk.Combobox(add_attr_frame, values=["mainhand", "offhand", "head", "chest", "legs", "feet", "hand"], width=10)
+        self.attr_slot.set("mainhand")
+        self.attr_slot.grid(row=1, column=3, padx=2, pady=2)
+        
+        ttk.Button(add_attr_frame, text="Добавить", command=self.add_attribute).grid(row=2, column=1, padx=5, pady=5)
+        ttk.Button(add_attr_frame, text="Удалить", command=self.remove_attribute).grid(row=2, column=2, padx=5, pady=5)
+        
+        # 5. Пользовательские теги
+        custom_frame = ttk.LabelFrame(scrollable_frame, text="Пользовательские NBT теги", padding=10)
+        custom_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(custom_frame, text="Дополнительные теги (JSON формат):").pack(anchor=tk.W, pady=2)
+        self.custom_tags = scrolledtext.ScrolledText(custom_frame, height=5, width=70)
+        self.custom_tags.pack(fill=tk.X, pady=5)
+        
+    def setup_text_editor(self):
+        """Создает текстовый редактор NBT"""
+        ttk.Label(self.text_tab, text="Введите NBT данные в формате JSON или SNBT:").pack(anchor=tk.W, padx=5, pady=5)
+        
+        self.text_nbt = scrolledtext.ScrolledText(self.text_tab, height=25, width=80, font=("Courier", 10))
+        self.text_nbt.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        examples_frame = ttk.Frame(self.text_tab)
+        examples_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(examples_frame, text="Быстрые примеры:").pack(side=tk.LEFT)
+        ttk.Button(examples_frame, text="Алмазный меч", 
+                   command=lambda: self.load_text_example("sword")).pack(side=tk.LEFT, padx=5)
+        ttk.Button(examples_frame, text="Зачарованный лук", 
+                   command=lambda: self.load_text_example("bow")).pack(side=tk.LEFT, padx=5)
+        ttk.Button(examples_frame, text="Кастомный предмет", 
+                   command=lambda: self.load_text_example("custom")).pack(side=tk.LEFT, padx=5)
+        
+    def add_enchantment(self):
+        """Добавляет зачарование"""
+        enchant = self.enchant_type.get()
+        level = self.enchant_level.get()
+        
+        if enchant and level:
+            enchant_text = f"{enchant} {level}"
+            self.enchantments.append({"id": enchant, "lvl": int(level)})
+            self.enchantments_listbox.insert(tk.END, enchant_text)
+            
+    def remove_enchantment(self):
+        """Удаляет выбранное зачарование"""
+        selection = self.enchantments_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.enchantments_listbox.delete(index)
+            del self.enchantments[index]
+            
+    def generate_uuid(self):
+        """Генерирует UUID в формате для Minecraft (16-битные значения)"""
+        uuids = []
+        for _ in range(4):
+            u = uuid.uuid4()
+            uuid_int = int(u.hex[:4], 16)
+            uuids.append(uuid_int)
+        return uuids
+        
+    def add_attribute(self):
+        """Добавляет атрибут с UUID и AttributeName"""
+        name = self.attr_name.get()
+        value = self.attr_value.get()
+        operation = self.attr_operation.get()
+        slot = self.attr_slot.get()
+        
+        if name and value:
+            try:
+                value = float(value)
+                op_map = {"add": 0, "multiply_base": 1, "multiply_total": 2}
+                
+                attr_uuid = self.generate_uuid()
+                
+                attr_text = f"{name}: {value} ({operation}) [{slot}]"
+                self.attributes.append({
+                    "AttributeName": name,  # Используем AttributeName вместо Name
+                    "Amount": value,
+                    "Operation": op_map.get(operation, 0),
+                    "Slot": slot,
+                    "UUID": attr_uuid
+                })
+                self.attributes_listbox.insert(tk.END, attr_text)
+            except ValueError:
+                messagebox.showerror("Ошибка", "Некорректное значение атрибута")
+                
+    def remove_attribute(self):
+        """Удаляет выбранный атрибут"""
+        selection = self.attributes_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.attributes_listbox.delete(index)
+            del self.attributes[index]
+            
+    def build_nbt(self):
+        """Собирает NBT данные из визуального редактора"""
+        nbt = {}
+        
+        display = {}
+        if self.display_name.get():
+            display["Name"] = f'"{self.display_name.get()}"'
+            
+        lore = self.lore_text.get("1.0", tk.END).strip()
+        if lore:
+            lore_lines = [f'"{line.strip()}"' for line in lore.split("\n") if line.strip()]
+            if lore_lines:
+                display["Lore"] = lore_lines
+                
+        if display:
+            nbt["display"] = display
+            
+        if self.unbreakable.get():
+            nbt["Unbreakable"] = 1
+            
+        cost = self.repair_cost.get()
+        if cost and int(cost) > 0:
+            nbt["RepairCost"] = int(cost)
+            
+        if self.hide_particles.get():
+            nbt["HideFlags"] = 1
+            
+        if self.enchantments:
+            nbt["Enchantments"] = self.enchantments
+            
+        if self.attributes:
+            nbt["AttributeModifiers"] = self.attributes
+            
+        custom_text = self.custom_tags.get("1.0", tk.END).strip()
+        if custom_text:
+            try:
+                custom_tags = json.loads(custom_text)
+                if isinstance(custom_tags, dict):
+                    nbt.update(custom_tags)
+            except:
+                pass
+                
+        return nbt
+        
+    def load_current_nbt(self):
+        """Загружает текущие NBT данные в редактор"""
+        if not self.current_nbt:
+            return
+            
+        nbt = self.current_nbt
+        
+        if "display" in nbt:
+            display = nbt["display"]
+            if "Name" in display:
+                name = display["Name"].strip('"')
+                self.display_name.insert(0, name)
+            if "Lore" in display and isinstance(display["Lore"], list):
+                lore_text = "\n".join([l.strip('"') for l in display["Lore"]])
+                self.lore_text.insert("1.0", lore_text)
+                
+        if "Unbreakable" in nbt and nbt["Unbreakable"] == 1:
+            self.unbreakable.set(True)
+        if "RepairCost" in nbt:
+            self.repair_cost.set(str(nbt["RepairCost"]))
+        if "HideFlags" in nbt and nbt["HideFlags"] == 1:
+            self.hide_particles.set(True)
+            
+        if "Enchantments" in nbt and isinstance(nbt["Enchantments"], list):
+            for ench in nbt["Enchantments"]:
+                if isinstance(ench, dict) and "id" in ench and "lvl" in ench:
+                    self.enchantments.append(ench)
+                    self.enchantments_listbox.insert(tk.END, f"{ench['id']} {ench['lvl']}")
+                    
+        # Загружаем атрибуты с AttributeName
+        if "AttributeModifiers" in nbt and isinstance(nbt["AttributeModifiers"], list):
+            for attr in nbt["AttributeModifiers"]:
+                if isinstance(attr, dict) and "AttributeName" in attr:
+                    op_map = {0: "add", 1: "multiply_base", 2: "multiply_total"}
+                    operation = op_map.get(attr.get("Operation", 0), "add")
+                    slot = attr.get("Slot", "mainhand")
+                    attr_text = f"{attr['AttributeName']}: {attr.get('Amount', 0)} ({operation}) [{slot}]"
+                    self.attributes.append(attr)
+                    self.attributes_listbox.insert(tk.END, attr_text)
+                    
+    def load_text_example(self, example_type):
+        """Загружает пример в текстовый редактор"""
+        examples = {
+            "sword": '{display:{Name:"§6§lЛегендарный Меч",Lore:["§7Мощное оружие","§7созданное богами"]},Enchantments:[{id:"sharpness",lvl:100}],Unbreakable:1}',
+            "bow": '{display:{Name:"§b§lЛук Судьбы",Lore:["§7Стрелы всегда находят цель"]},Enchantments:[{id:"power",lvl:100},{id:"punch",lvl:100},{id:"flame",lvl:100},{id:"infinity",lvl:1}],Unbreakable:1}',
+            "custom": '{display:{Name:"§d§lКристалл Души",Lore:["§7Древний артефакт","§7хранящий силу предков"]},AttributeModifiers:[{AttributeName:"generic.max_health",Amount:100,Operation:0,Slot:"mainhand",UUID:[I;1234,5678,9101,1121]}],Enchantments:[{id:"protection",lvl:100}],Unbreakable:1}'
+        }
+        
+        self.text_nbt.delete("1.0", tk.END)
+        self.text_nbt.insert("1.0", examples.get(example_type, ""))
+        
+    def load_example(self):
+        """Загружает пример в визуальный редактор"""
+        self.clear_all()
+        self.display_name.insert(0, "§6§lЛегендарный Меч")
+        self.lore_text.insert("1.0", "§7Мощное оружие\n§7созданное богами")
+        self.unbreakable.set(True)
+        self.enchantments.append({"id": "sharpness", "lvl": 5})
+        self.enchantments_listbox.insert(tk.END, "sharpness 5")
+        self.enchantments.append({"id": "unbreaking", "lvl": 3})
+        self.enchantments_listbox.insert(tk.END, "unbreaking 3")
+        self.enchantments.append({"id": "mending", "lvl": 1})
+        self.enchantments_listbox.insert(tk.END, "mending 1")
+        
+    def clear_all(self):
+        """Очищает все поля"""
+        self.display_name.delete(0, tk.END)
+        self.lore_text.delete("1.0", tk.END)
+        self.unbreakable.set(False)
+        self.repair_cost.set(0)
+        self.hide_particles.set(False)
+        self.enchantments.clear()
+        self.enchantments_listbox.delete(0, tk.END)
+        self.attributes.clear()
+        self.attributes_listbox.delete(0, tk.END)
+        self.custom_tags.delete("1.0", tk.END)
+        self.text_nbt.delete("1.0", tk.END)
+        
+    def apply_nbt(self):
+        """Применяет NBT данные"""
+        current_tab = self.notebook.index(self.notebook.select())
+        
+        if current_tab == 0:
+            nbt_data = self.build_nbt()
+            nbt_string = self.dict_to_snbt(nbt_data)
+        else:
+            nbt_string = self.text_nbt.get("1.0", tk.END).strip()
+            
+        if self.callback:
+            self.callback(nbt_string)
+        self.window.destroy()
+
+
+class MinecraftCommandGenerator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Minecraft Command Generator")
+        self.root.geometry("900x700")
+        
+        # Настройки
+        self.command_history = []
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        # Создаем вкладки
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Создаем вкладки с командами
+        self.create_teleport_tab()
+        self.create_give_tab()
+        self.create_summon_tab()
+        self.create_setblock_tab()
+        self.create_effect_tab()
+        self.create_time_tab()
+        self.create_weather_tab()
+        self.create_gamerule_tab()
+        self.create_clone_tab()
+        self.create_particle_tab()
+        
+        # Вкладка с историей
+        self.create_history_tab()
+        
+    def create_give_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Выдача предметов")
+        
+        # Получатель
+        ttk.Label(tab, text="Кому выдать:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.give_target = ttk.Combobox(tab, values=["@p", "@r", "@a", "@e", "@s", "Игрок"], width=20)
+        self.give_target.set("@p")
+        self.give_target.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Поле для имени игрока
+        self.player_name_frame = ttk.Frame(tab)
+        self.player_name_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        ttk.Label(self.player_name_frame, text="Имя игрока:").pack(side=tk.LEFT, padx=5)
+        self.player_name = ttk.Entry(self.player_name_frame, width=30)
+        self.player_name.pack(side=tk.LEFT, padx=5)
+        self.player_name_frame.grid_remove()
+        
+        self.give_target.bind("<<ComboboxSelected>>", self.on_target_change)
+        
+        # Предмет
+        ttk.Label(tab, text="Предмет:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        items = ["minecraft:acacia_boat","minecraft:acacia_button","minecraft:acacia_door", "minecraft:acacia_fence", "minecraft:acacia_fence_gate", "minecraft:acacia_hanging_sign", "minecraft:acacia_leaves", "minecraft:acacia_log", "minecraft:acacia_planks", "minecraft:acacia_pressure_plate", "minecraft:acacia_sapling", "minecraft:acacia_sign", "minecraft:acacia_slab", "minecraft:acacia_stairs", "minecraft:acacia_trapdoor", "minecraft:acacia_wood", "minecraft:activator_rail", "minecraft:air", "minecraft:allium", "minecraft:amethyst_block", "minecraft:amethyst_cluster", "minecraft:amethyst_shard", "minecraft:ancient_debris", "minecraft:andesite", "minecraft:andesite_slab", "minecraft:andesite_stairs", "minecraft:andesite_wall", "minecraft:angler_pottery_sherd", "minecraft:anvil", "minecraft:apple", "minecraft:archer_pottery_sherd", "minecraft:armor_stand", "minecraft:arms_up_pottery_sherd", "minecraft:arrow", "minecraft:arrow_of_infestation", "minecraft:arrow_of_oozing", "minecraft:arrow_of_poison", "minecraft:arrow_of_weaving", "minecraft:arrow_of_wind_charging", "minecraft:axolotl_bucket", "minecraft:axolotl_spawn_egg", "minecraft:baked_potato", "minecraft:bamboo", "minecraft:bamboo_block", "minecraft:bamboo_button", "minecraft:bamboo_chest_raft", "minecraft:bamboo_door", "minecraft:bamboo_fence", "minecraft:bamboo_fence_gate", "minecraft:bamboo_hanging_sign", "minecraft:bamboo_mosaic", "minecraft:bamboo_mosaic_slab", "minecraft:bamboo_mosaic_stairs", "minecraft:bamboo_planks", "minecraft:bamboo_pressure_plate", "minecraft:bamboo_raft", "minecraft:bamboo_sign", "minecraft:bamboo_slab", "minecraft:bamboo_stairs", "minecraft:bamboo_trapdoor", "minecraft:barrel", "minecraft:barrier", "minecraft:basalt", "minecraft:bat_spawn_egg", "minecraft:beacon", "minecraft:bedrock", "minecraft:bee_nest", "minecraft:bee_spawn_egg", "minecraft:beef", "minecraft:beehive", "minecraft:beetroot", "minecraft:beetroot_seeds", "minecraft:beetroot_soup", "minecraft:bell", "minecraft:big_dripleaf", "minecraft:birch_boat", "minecraft:birch_button", "minecraft:birch_door", "minecraft:birch_fence", "minecraft:birch_fence_gate", "minecraft:birch_hanging_sign", "minecraft:birch_leaves", "minecraft:birch_log", "minecraft:birch_planks", "minecraft:birch_pressure_plate", "minecraft:birch_sapling", "minecraft:birch_sign", "minecraft:birch_slab", "minecraft:birch_stairs", "minecraft:birch_trapdoor", "minecraft:birch_wood", "minecraft:black_banner", "minecraft:black_bed", "minecraft:black_candle", "minecraft:black_carpet", "minecraft:black_concrete", "minecraft:black_concrete_powder", "minecraft:black_dye", "minecraft:black_glazed_terracotta", "minecraft:black_shulker_box", "minecraft:black_stained_glass", "minecraft:black_stained_glass_pane", "minecraft:black_terracotta", "minecraft:black_wool", "minecraft:blade_pottery_sherd", "minecraft:blast_furnace", "minecraft:blaze_powder", "minecraft:blaze_rod", "minecraft:blaze_spawn_egg", "minecraft:blue_banner", "minecraft:blue_bed", "minecraft:blue_candle", "minecraft:blue_carpet", "minecraft:blue_concrete", "minecraft:blue_concrete_powder", "minecraft:blue_dye", "minecraft:blue_glazed_terracotta", "minecraft:blue_ice", "minecraft:blue_orchid", "minecraft:blue_shulker_box", "minecraft:blue_stained_glass", "minecraft:blue_stained_glass_pane", "minecraft:blue_terracotta", "minecraft:blue_wool", "minecraft:bogged_spawn_egg", "minecraft:bolt_armor_trim_smithing_template", "minecraft:bone", "minecraft:bone_block", "minecraft:bone_meal", "minecraft:book", "minecraft:bookshelf", "minecraft:bow", "minecraft:bowl", "minecraft:brain_coral", "minecraft:brain_coral_block", "minecraft:brain_coral_fan", "minecraft:bread", "minecraft:breeze_rod", "minecraft:breeze_spawn_egg", "minecraft:brewer_pottery_sherd", "minecraft:brewing_stand", "minecraft:brick", "minecraft:brick_slab", "minecraft:brick_stairs", "minecraft:brick_wall", "minecraft:bricks", "minecraft:brown_banner", "minecraft:brown_bed", "minecraft:brown_candle", "minecraft:brown_carpet", "minecraft:brown_concrete", "minecraft:brown_concrete_powder", "minecraft:brown_dye", "minecraft:brown_glazed_terracotta", "minecraft:brown_mushroom", "minecraft:brown_mushroom_block", "minecraft:brown_shulker_box", "minecraft:brown_stained_glass", "minecraft:brown_stained_glass_pane", "minecraft:brown_terracotta", "minecraft:brown_wool", "minecraft:bucket", "minecraft:bundle", "minecraft:burn_pottery_sherd", "minecraft:cactus", "minecraft:cake", "minecraft:calcite", "minecraft:calibrated_sculk_sensor", "minecraft:camel_spawn_egg", "minecraft:campfire", "minecraft:candle", "minecraft:carrot", "minecraft:carrot_on_a_stick", "minecraft:cartography_table", "minecraft:carved_pumpkin", "minecraft:cat_spawn_egg", "minecraft:cauldron", "minecraft:cave_spider_spawn_egg", "minecraft:chain", "minecraft:chain_command_block", "minecraft:chainmail_boots", "minecraft:chainmail_chestplate", "minecraft:chainmail_helmet", "minecraft:chainmail_leggings", "minecraft:charcoal", "minecraft:cherry_boat", "minecraft:cherry_button", "minecraft:cherry_door", "minecraft:cherry_fence", "minecraft:cherry_fence_gate", "minecraft:cherry_hanging_sign", "minecraft:cherry_leaves", "minecraft:cherry_log", "minecraft:cherry_planks", "minecraft:cherry_pressure_plate", "minecraft:cherry_sapling", "minecraft:cherry_sign", "minecraft:cherry_slab", "minecraft:cherry_stairs", "minecraft:cherry_trapdoor", "minecraft:cherry_wood", "minecraft:chest", "minecraft:chest_minecart", "minecraft:chicken", "minecraft:chicken_spawn_egg", "minecraft:chiseled_deepslate", "minecraft:chiseled_nether_bricks", "minecraft:chiseled_polished_blackstone", "minecraft:chiseled_quartz_block", "minecraft:chiseled_red_sandstone", "minecraft:chiseled_sandstone", "minecraft:chiseled_stone_bricks", "minecraft:chorus_flower", "minecraft:chorus_fruit", "minecraft:chorus_plant", "minecraft:clay", "minecraft:clay_ball", "minecraft:clock", "minecraft:coal", "minecraft:coal_block", "minecraft:coal_ore", "minecraft:coarse_dirt", "minecraft:coast_armor_trim_smithing_template", "minecraft:cobbled_deepslate", "minecraft:cobbled_deepslate_slab", "minecraft:cobbled_deepslate_stairs", "minecraft:cobbled_deepslate_wall", "minecraft:cobblestone", "minecraft:cobblestone_slab", "minecraft:cobblestone_stairs", "minecraft:cobblestone_wall", "minecraft:cobweb", "minecraft:cocoa_beans", "minecraft:cod", "minecraft:cod_bucket", "minecraft:cod_spawn_egg", "minecraft:command_block", "minecraft:command_block_minecart", "minecraft:comparator", "minecraft:compass", "minecraft:composter", "minecraft:conduit", "minecraft:cooked_beef", "minecraft:cooked_chicken", "minecraft:cooked_cod", "minecraft:cooked_mutton", "minecraft:cooked_porkchop", "minecraft:cooked_rabbit", "minecraft:cooked_salmon", "minecraft:cookie", "minecraft:copper_block", "minecraft:copper_bulb", "minecraft:copper_door", "minecraft:copper_grate", "minecraft:copper_ingot", "minecraft:copper_ore", "minecraft:copper_trapdoor", "minecraft:cornflower", "minecraft:cow_spawn_egg", "minecraft:cracked_deepslate_bricks", "minecraft:cracked_deepslate_tiles", "minecraft:cracked_nether_bricks", "minecraft:cracked_polished_blackstone_bricks", "minecraft:cracked_stone_bricks", "minecraft:crafting_table", "minecraft:creeper_banner_pattern", "minecraft:creeper_head", "minecraft:creeper_spawn_egg", "minecraft:crimson_button", "minecraft:crimson_door", "minecraft:crimson_fence", "minecraft:crimson_fence_gate", "minecraft:crimson_fungus", "minecraft:crimson_hanging_sign", "minecraft:crimson_hyphae", "minecraft:crimson_nylium", "minecraft:crimson_planks", "minecraft:crimson_pressure_plate", "minecraft:crimson_roots", "minecraft:crimson_sign", "minecraft:crimson_slab", "minecraft:crimson_stairs", "minecraft:crimson_stem", "minecraft:crimson_trapdoor", "minecraft:crossbow", "minecraft:crying_obsidian", "minecraft:cut_copper", "minecraft:cut_copper_slab", "minecraft:cut_copper_stairs", "minecraft:cut_red_sandstone", "minecraft:cut_red_sandstone_slab", "minecraft:cut_sandstone", "minecraft:cut_sandstone_slab", "minecraft:cyan_banner", "minecraft:cyan_bed", "minecraft:cyan_candle", "minecraft:cyan_carpet", "minecraft:cyan_concrete", "minecraft:cyan_concrete_powder", "minecraft:cyan_dye", "minecraft:cyan_glazed_terracotta", "minecraft:cyan_shulker_box", "minecraft:cyan_stained_glass", "minecraft:cyan_stained_glass_pane", "minecraft:cyan_terracotta", "minecraft:cyan_wool", "minecraft:damaged_anvil", "minecraft:dandelion", "minecraft:dark_oak_boat", "minecraft:dark_oak_button", "minecraft:dark_oak_door", "minecraft:dark_oak_fence", "minecraft:dark_oak_fence_gate", "minecraft:dark_oak_hanging_sign", "minecraft:dark_oak_leaves", "minecraft:dark_oak_log", "minecraft:dark_oak_planks", "minecraft:dark_oak_pressure_plate", "minecraft:dark_oak_sapling", "minecraft:dark_oak_sign", "minecraft:dark_oak_slab", "minecraft:dark_oak_stairs", "minecraft:dark_oak_trapdoor", "minecraft:dark_oak_wood", "minecraft:dark_prismarine", "minecraft:dark_prismarine_slab", "minecraft:dark_prismarine_stairs", "minecraft:daylight_detector", "minecraft:dead_brain_coral", "minecraft:dead_brain_coral_block", "minecraft:dead_brain_coral_fan", "minecraft:dead_bubble_coral", "minecraft:dead_bubble_coral_block", "minecraft:dead_bubble_coral_fan", "minecraft:dead_bush", "minecraft:dead_fire_coral", "minecraft:dead_fire_coral_block", "minecraft:dead_fire_coral_fan", "minecraft:dead_horn_coral", "minecraft:dead_horn_coral_block", "minecraft:dead_horn_coral_fan", "minecraft:dead_tube_coral", "minecraft:dead_tube_coral_block", "minecraft:dead_tube_coral_fan", "minecraft:debug_stick", "minecraft:deepslate", "minecraft:deepslate_brick_slab", "minecraft:deepslate_brick_stairs", "minecraft:deepslate_brick_wall", "minecraft:deepslate_bricks", "minecraft:deepslate_coal_ore", "minecraft:deepslate_copper_ore", "minecraft:deepslate_diamond_ore", "minecraft:deepslate_emerald_ore", "minecraft:deepslate_gold_ore", "minecraft:deepslate_iron_ore", "minecraft:deepslate_lapis_ore", "minecraft:deepslate_redstone_ore", "minecraft:deepslate_tile_slab", "minecraft:deepslate_tile_stairs", "minecraft:deepslate_tile_wall", "minecraft:deepslate_tiles", "minecraft:detector_rail", "minecraft:diamond", "minecraft:diamond_axe", "minecraft:diamond_block", "minecraft:diamond_boots", "minecraft:diamond_chestplate", "minecraft:diamond_helmet", "minecraft:diamond_hoe", "minecraft:diamond_horse_armor", "minecraft:diamond_leggings", "minecraft:diamond_ore", "minecraft:diamond_pickaxe", "minecraft:diamond_shovel", "minecraft:diamond_sword", "minecraft:diorite", "minecraft:diorite_slab", "minecraft:diorite_stairs", "minecraft:diorite_wall", "minecraft:dirt", "minecraft:dirt_path", "minecraft:disc_fragment_5", "minecraft:dispenser", "minecraft:dolphin_spawn_egg", "minecraft:donkey_spawn_egg", "minecraft:dragon_breath", "minecraft:dragon_egg", "minecraft:dragon_head", "minecraft:dried_kelp", "minecraft:dried_kelp_block", "minecraft:dripstone_block", "minecraft:dropper", "minecraft:drowned_spawn_egg", "minecraft:echo_shard", "minecraft:egg", "minecraft:elder_guardian_spawn_egg", "minecraft:elytra", "minecraft:emerald", "minecraft:emerald_block", "minecraft:emerald_ore", "minecraft:enchanted_book", "minecraft:enchanted_golden_apple", "minecraft:enchanting_table", "minecraft:end_crystal", "minecraft:end_rod", "minecraft:end_stone", "minecraft:end_stone_brick_slab", "minecraft:end_stone_brick_stairs", "minecraft:end_stone_brick_wall", "minecraft:end_stone_bricks", "minecraft:ender_chest", "minecraft:ender_eye", "minecraft:ender_pearl", "minecraft:enderman_spawn_egg", "minecraft:endermite_spawn_egg", "minecraft:evoker_spawn_egg", "minecraft:experience_bottle", "minecraft:exposed_copper", "minecraft:exposed_copper_bulb", "minecraft:exposed_copper_door", "minecraft:exposed_copper_grate", "minecraft:exposed_copper_trapdoor", "minecraft:exposed_cut_copper", "minecraft:exposed_cut_copper_slab", "minecraft:exposed_cut_copper_stairs", "minecraft:eye_armor_trim_smithing_template", "minecraft:farmer_pottery_sherd", "minecraft:feather", "minecraft:fermented_spider_eye", "minecraft:fern", "minecraft:filled_map", "minecraft:fire_charge", "minecraft:fire_coral", "minecraft:fire_coral_block", "minecraft:fire_coral_fan", "minecraft:firework_rocket", "minecraft:firework_star", "minecraft:fishing_rod", "minecraft:fletching_table", "minecraft:flint", "minecraft:flint_and_steel", "minecraft:flower_banner_pattern", "minecraft:flower_pot", "minecraft:flow_armor_trim_smithing_template", "minecraft:flow_banner_pattern", "minecraft:flow_pottery_sherd", "minecraft:fox_spawn_egg", "minecraft:frog_spawn_egg", "minecraft:frogspawn", "minecraft:furnace", "minecraft:furnace_minecart", "minecraft:ghast_spawn_egg", "minecraft:ghast_tear", "minecraft:gilded_blackstone", "minecraft:glass", "minecraft:glass_bottle", "minecraft:glass_pane", "minecraft:glistering_melon_slice", "minecraft:globe_banner_pattern", "minecraft:glow_berries", "minecraft:glow_ink_sac", "minecraft:glow_item_frame", "minecraft:glow_lichen", "minecraft:glow_squid_spawn_egg", "minecraft:glowstone", "minecraft:glowstone_dust", "minecraft:goat_horn", "minecraft:goat_spawn_egg", "minecraft:gold_block", "minecraft:gold_ingot", "minecraft:gold_nugget", "minecraft:gold_ore", "minecraft:golden_apple", "minecraft:golden_axe", "minecraft:golden_boots", "minecraft:golden_carrot", "minecraft:golden_chestplate", "minecraft:golden_helmet", "minecraft:golden_hoe", "minecraft:golden_horse_armor", "minecraft:golden_leggings", "minecraft:golden_pickaxe", "minecraft:golden_shovel", "minecraft:golden_sword", "minecraft:granite", "minecraft:granite_slab", "minecraft:granite_stairs", "minecraft:granite_wall", "minecraft:grass_block", "minecraft:gravel", "minecraft:gray_banner", "minecraft:gray_bed", "minecraft:gray_candle", "minecraft:gray_carpet", "minecraft:gray_concrete", "minecraft:gray_concrete_powder", "minecraft:gray_dye", "minecraft:gray_glazed_terracotta", "minecraft:gray_shulker_box", "minecraft:gray_stained_glass", "minecraft:gray_stained_glass_pane", "minecraft:gray_terracotta", "minecraft:gray_wool", "minecraft:green_banner", "minecraft:green_bed", "minecraft:green_candle", "minecraft:green_carpet", "minecraft:green_concrete", "minecraft:green_concrete_powder", "minecraft:green_dye", "minecraft:green_glazed_terracotta", "minecraft:green_shulker_box", "minecraft:green_stained_glass", "minecraft:green_stained_glass_pane", "minecraft:green_terracotta", "minecraft:green_wool", "minecraft:grindstone", "minecraft:guardian_spawn_egg", "minecraft:gunpowder", "minecraft:gust_armor_trim_smithing_template", "minecraft:gust_banner_pattern", "minecraft:gust_pottery_sherd", "minecraft:hanging_root", "minecraft:hay_block", "minecraft:heart_of_the_sea", "minecraft:heart_pottery_sherd", "minecraft:heartbreak_pottery_sherd", "minecraft:heavy_core", "minecraft:helmet", "minecraft:hoglin_spawn_egg", "minecraft:honey_block", "minecraft:honey_bottle", "minecraft:honeycomb", "minecraft:honeycomb_block", "minecraft:hopper", "minecraft:hopper_minecart", "minecraft:horn_coral", "minecraft:horn_coral_block", "minecraft:horn_coral_fan", "minecraft:horse_spawn_egg", "minecraft:host_armor_trim_smithing_template", "minecraft:howl_pottery_sherd", "minecraft:husk_spawn_egg", "minecraft:ice", "minecraft:infested_chiseled_stone_bricks", "minecraft:infested_cobblestone", "minecraft:infested_cracked_stone_bricks", "minecraft:infested_deepslate", "minecraft:infested_mossy_stone_bricks", "minecraft:infested_stone", "minecraft:infested_stone_bricks", "minecraft:ink_sac", "minecraft:iron_axe", "minecraft:iron_bars", "minecraft:iron_block", "minecraft:iron_boots", "minecraft:iron_chestplate", "minecraft:iron_door", "minecraft:iron_helmet", "minecraft:iron_hoe", "minecraft:iron_horse_armor", "minecraft:iron_ingot", "minecraft:iron_leggings", "minecraft:iron_nugget", "minecraft:iron_ore", "minecraft:iron_pickaxe", "minecraft:iron_shovel", "minecraft:iron_sword", "minecraft:iron_trapdoor", "minecraft:item_frame", "minecraft:jack_o_lantern", "minecraft:jigsaw", "minecraft:jukebox", "minecraft:jungle_boat", "minecraft:jungle_button", "minecraft:jungle_door", "minecraft:jungle_fence", "minecraft:jungle_fence_gate", "minecraft:jungle_hanging_sign", "minecraft:jungle_leaves", "minecraft:jungle_log", "minecraft:jungle_planks", "minecraft:jungle_pressure_plate", "minecraft:jungle_sapling", "minecraft:jungle_sign", "minecraft:jungle_slab", "minecraft:jungle_stairs", "minecraft:jungle_trapdoor", "minecraft:jungle_wood", "minecraft:kelp", "minecraft:knowledge_book", "minecraft:ladder", "minecraft:lantern", "minecraft:lapis_block", "minecraft:lapis_lazuli", "minecraft:lapis_ore", "minecraft:large_amethyst_bud", "minecraft:large_fern", "minecraft:lava_bucket", "minecraft:lead", "minecraft:leather", "minecraft:leather_boots", "minecraft:leather_chestplate", "minecraft:leather_helmet", "minecraft:leather_horse_armor", "minecraft:leather_leggings", "minecraft:lectern", "minecraft:lever", "minecraft:light", "minecraft:light_blue_banner", "minecraft:light_blue_bed", "minecraft:light_blue_candle", "minecraft:light_blue_carpet", "minecraft:light_blue_concrete", "minecraft:light_blue_concrete_powder", "minecraft:light_blue_dye", "minecraft:light_blue_glazed_terracotta", "minecraft:light_blue_shulker_box", "minecraft:light_blue_stained_glass", "minecraft:light_blue_stained_glass_pane", "minecraft:light_blue_terracotta", "minecraft:light_blue_wool", "minecraft:light_gray_banner", "minecraft:light_gray_bed", "minecraft:light_gray_candle", "minecraft:light_gray_carpet", "minecraft:light_gray_concrete", "minecraft:light_gray_concrete_powder", "minecraft:light_gray_dye", "minecraft:light_gray_glazed_terracotta", "minecraft:light_gray_shulker_box", "minecraft:light_gray_stained_glass", "minecraft:light_gray_stained_glass_pane", "minecraft:light_gray_terracotta", "minecraft:light_gray_wool", "minecraft:lightning_rod", "minecraft:lilac", "minecraft:lily_of_the_valley", "minecraft:lily_pad", "minecraft:lime_banner", "minecraft:lime_bed", "minecraft:lime_candle", "minecraft:lime_carpet", "minecraft:lime_concrete", "minecraft:lime_concrete_powder", "minecraft:lime_dye", "minecraft:lime_glazed_terracotta", "minecraft:lime_shulker_box", "minecraft:lime_stained_glass", "minecraft:lime_stained_glass_pane", "minecraft:lime_terracotta", "minecraft:lime_wool", "minecraft:lingering_potion", "minecraft:llama_spawn_egg", "minecraft:lodestone", "minecraft:loom", "minecraft:mace", "minecraft:magenta_banner", "minecraft:magenta_bed", "minecraft:magenta_candle", "minecraft:magenta_carpet", "minecraft:magenta_concrete", "minecraft:magenta_concrete_powder", "minecraft:magenta_dye", "minecraft:magenta_glazed_terracotta", "minecraft:magenta_shulker_box", "minecraft:magenta_stained_glass", "minecraft:magenta_stained_glass_pane", "minecraft:magenta_terracotta", "minecraft:magenta_wool", "minecraft:magma_block", "minecraft:magma_cream", "minecraft:magma_cube_spawn_egg", "minecraft:mangrove_boat", "minecraft:mangrove_button", "minecraft:mangrove_door", "minecraft:mangrove_fence", "minecraft:mangrove_fence_gate", "minecraft:mangrove_hanging_sign", "minecraft:mangrove_leaves", "minecraft:mangrove_log", "minecraft:mangrove_planks", "minecraft:mangrove_pressure_plate", "minecraft:mangrove_propagule", "minecraft:mangrove_roots", "minecraft:mangrove_sign", "minecraft:mangrove_slab", "minecraft:mangrove_stairs", "minecraft:mangrove_trapdoor", "minecraft:mangrove_wood", "minecraft:map", "minecraft:medium_amethyst_bud", "minecraft:melon", "minecraft:melon_seeds", "minecraft:melon_slice", "minecraft:milk_bucket", "minecraft:minecart", "minecraft:miner_pottery_sherd", "minecraft:mojang_banner_pattern", "minecraft:mooshroom_spawn_egg", "minecraft:moss_block", "minecraft:moss_carpet", "minecraft:mossy_cobblestone", "minecraft:mossy_cobblestone_slab", "minecraft:mossy_cobblestone_stairs", "minecraft:mossy_cobblestone_wall", "minecraft:mossy_stone_brick_slab", "minecraft:mossy_stone_brick_stairs", "minecraft:mossy_stone_brick_wall", "minecraft:mossy_stone_bricks", "minecraft:mourner_pottery_sherd", "minecraft:mud", "minecraft:mud_brick_slab", "minecraft:mud_brick_stairs", "minecraft:mud_brick_wall", "minecraft:mud_bricks", "minecraft:muddy_mangrove_roots", "minecraft:mule_spawn_egg", "minecraft:mushroom_stem", "minecraft:mushroom_stew", "minecraft:music_disc_5", "minecraft:music_disc_11", "minecraft:music_disc_13", "minecraft:music_disc_blocks", "minecraft:music_disc_cat", "minecraft:music_disc_chirp", "minecraft:music_disc_creator", "minecraft:music_disc_creator_music_box", "minecraft:music_disc_far", "minecraft:music_disc_mall", "minecraft:music_disc_mellohi", "minecraft:music_disc_otherside", "minecraft:music_disc_pigstep", "minecraft:music_disc_precipice", "minecraft:music_disc_relic", "minecraft:music_disc_stal", "minecraft:music_disc_strad", "minecraft:music_disc_wait", "minecraft:music_disc_ward", "minecraft:mutton", "minecraft:mycelium", "minecraft:name_tag", "minecraft:nautilus_shell", "minecraft:nether_brick", "minecraft:nether_brick_fence", "minecraft:nether_brick_slab", "minecraft:nether_brick_stairs", "minecraft:nether_brick_wall", "minecraft:nether_bricks", "minecraft:nether_gold_ore", "minecraft:nether_quartz_ore", "minecraft:nether_sprouts", "minecraft:nether_star", "minecraft:nether_wart", "minecraft:nether_wart_block", "minecraft:netherite_axe", "minecraft:netherite_block", "minecraft:netherite_boots", "minecraft:netherite_chestplate", "minecraft:netherite_helmet", "minecraft:netherite_hoe", "minecraft:netherite_ingot", "minecraft:netherite_leggings", "minecraft:netherite_pickaxe", "minecraft:netherite_scrap", "minecraft:netherite_shovel", "minecraft:netherite_sword", "minecraft:netherite_upgrade_smithing_template", "minecraft:netherrack", "minecraft:note_block", "minecraft:oak_boat", "minecraft:oak_button", "minecraft:oak_door", "minecraft:oak_fence", "minecraft:oak_fence_gate", "minecraft:oak_hanging_sign", "minecraft:oak_leaves", "minecraft:oak_log", "minecraft:oak_planks", "minecraft:oak_pressure_plate", "minecraft:oak_sapling", "minecraft:oak_sign", "minecraft:oak_slab", "minecraft:oak_stairs", "minecraft:oak_trapdoor", "minecraft:oak_wood", "minecraft:observer", "minecraft:obsidian", "minecraft:ocelot_spawn_egg", "minecraft:ochre_froglight", "minecraft:ominous_bottle", "minecraft:ominous_trial_key", "minecraft:orange_banner", "minecraft:orange_bed", "minecraft:orange_candle", "minecraft:orange_carpet", "minecraft:orange_concrete", "minecraft:orange_concrete_powder", "minecraft:orange_dye", "minecraft:orange_glazed_terracotta", "minecraft:orange_shulker_box", "minecraft:orange_stained_glass", "minecraft:orange_stained_glass_pane", "minecraft:orange_terracotta", "minecraft:orange_tulip", "minecraft:orange_wool", "minecraft:oxeye_daisy", "minecraft:oxidized_copper", "minecraft:oxidized_copper_bulb", "minecraft:oxidized_copper_door", "minecraft:oxidized_copper_grate", "minecraft:oxidized_copper_trapdoor", "minecraft:oxidized_cut_copper", "minecraft:oxidized_cut_copper_slab", "minecraft:oxidized_cut_copper_stairs", "minecraft:packed_ice", "minecraft:packed_mud", "minecraft:paintbrush", "minecraft:painting", "minecraft:pale_oak_boat", "minecraft:pale_oak_button", "minecraft:pale_oak_door", "minecraft:pale_oak_fence", "minecraft:pale_oak_fence_gate", "minecraft:pale_oak_hanging_sign", "minecraft:pale_oak_leaves", "minecraft:pale_oak_log", "minecraft:pale_oak_planks", "minecraft:pale_oak_pressure_plate", "minecraft:pale_oak_sapling", "minecraft:pale_oak_sign", "minecraft:pale_oak_slab", "minecraft:pale_oak_stairs", "minecraft:pale_oak_trapdoor", "minecraft:pale_oak_wood", "minecraft:panda_spawn_egg", "minecraft:paper", "minecraft:parrot_spawn_egg", "minecraft:pearlescent_froglight", "minecraft:phantom_membrane", "minecraft:phantom_spawn_egg", "minecraft:pig_spawn_egg", "minecraft:piglin_banner_pattern", "minecraft:piglin_brute_spawn_egg", "minecraft:piglin_spawn_egg", "minecraft:pillager_spawn_egg", "minecraft:pink_banner", "minecraft:pink_bed", "minecraft:pink_candle", "minecraft:pink_carpet", "minecraft:pink_concrete", "minecraft:pink_concrete_powder", "minecraft:pink_dye", "minecraft:pink_glazed_terracotta", "minecraft:pink_petals", "minecraft:pink_shulker_box", "minecraft:pink_stained_glass", "minecraft:pink_stained_glass_pane", "minecraft:pink_terracotta", "minecraft:pink_tulip", "minecraft:pink_wool", "minecraft:piston", "minecraft:pitcher_plant", "minecraft:pitcher_pod", "minecraft:player_head", "minecraft:podzol", "minecraft:pointed_dripstone", "minecraft:poisonous_potato", "minecraft:polar_bear_spawn_egg", "minecraft:polished_andesite", "minecraft:polished_andesite_slab", "minecraft:polished_andesite_stairs", "minecraft:polished_basalt", "minecraft:polished_blackstone", "minecraft:polished_blackstone_brick_slab", "minecraft:polished_blackstone_brick_stairs", "minecraft:polished_blackstone_brick_wall", "minecraft:polished_blackstone_bricks", "minecraft:polished_blackstone_button", "minecraft:polished_blackstone_pressure_plate", "minecraft:polished_blackstone_slab", "minecraft:polished_blackstone_stairs", "minecraft:polished_blackstone_wall", "minecraft:polished_deepslate", "minecraft:polished_deepslate_slab", "minecraft:polished_deepslate_stairs", "minecraft:polished_deepslate_wall", "minecraft:polished_diorite", "minecraft:polished_diorite_slab", "minecraft:polished_diorite_stairs", "minecraft:polished_granite", "minecraft:polished_granite_slab", "minecraft:polished_granite_stairs", "minecraft:polished_tuff", "minecraft:polished_tuff_slab", "minecraft:polished_tuff_stairs", "minecraft:polished_tuff_wall", "minecraft:popped_chorus_fruit", "minecraft:poppy", "minecraft:porkchop", "minecraft:potato", "minecraft:potion", "minecraft:powder_snow_bucket", "minecraft:powdered_snow", "minecraft:powered_rail", "minecraft:prismarine", "minecraft:prismarine_brick_slab", "minecraft:prismarine_brick_stairs", "minecraft:prismarine_bricks", "minecraft:prismarine_crystals", "minecraft:prismarine_shard", "minecraft:prismarine_slab", "minecraft:prismarine_stairs", "minecraft:prismarine_wall", "minecraft:prize_pottery_sherd", "minecraft:pufferfish", "minecraft:pufferfish_bucket", "minecraft:pufferfish_spawn_egg", "minecraft:pumpkin", "minecraft:pumpkin_pie", "minecraft:pumpkin_seeds", "minecraft:purple_banner", "minecraft:purple_bed", "minecraft:purple_candle", "minecraft:purple_carpet", "minecraft:purple_concrete", "minecraft:purple_concrete_powder", "minecraft:purple_dye", "minecraft:purple_glazed_terracotta", "minecraft:purple_shulker_box", "minecraft:purple_stained_glass", "minecraft:purple_stained_glass_pane", "minecraft:purple_terracotta", "minecraft:purple_wool", "minecraft:purpur_block", "minecraft:purpur_pillar", "minecraft:purpur_slab", "minecraft:purpur_stairs", "minecraft:quartz", "minecraft:quartz_block", "minecraft:quartz_bricks", "minecraft:quartz_pillar", "minecraft:quartz_slab", "minecraft:quartz_stairs", "minecraft:rabbit", "minecraft:rabbit_foot", "minecraft:rabbit_hide", "minecraft:rabbit_spawn_egg", "minecraft:rabbit_stew", "minecraft:rail", "minecraft:raiser_armor_trim_smithing_template", "minecraft:ravager_spawn_egg", "minecraft:raw_copper", "minecraft:raw_copper_block", "minecraft:raw_gold", "minecraft:raw_gold_block", "minecraft:raw_iron", "minecraft:raw_iron_block", "minecraft:recovery_compass", "minecraft:red_banner", "minecraft:red_bed", "minecraft:red_candle", "minecraft:red_carpet", "minecraft:red_concrete", "minecraft:red_concrete_powder", "minecraft:red_dye", "minecraft:red_glazed_terracotta", "minecraft:red_mushroom", "minecraft:red_mushroom_block", "minecraft:red_nether_brick_slab", "minecraft:red_nether_brick_stairs", "minecraft:red_nether_brick_wall", "minecraft:red_nether_bricks", "minecraft:red_sand", "minecraft:red_sandstone", "minecraft:red_sandstone_slab", "minecraft:red_sandstone_stairs", "minecraft:red_sandstone_wall", "minecraft:red_shulker_box", "minecraft:red_stained_glass", "minecraft:red_stained_glass_pane", "minecraft:red_terracotta", "minecraft:red_tulip", "minecraft:red_wool", "minecraft:redstone", "minecraft:redstone_block", "minecraft:redstone_lamp", "minecraft:redstone_ore", "minecraft:redstone_torch", "minecraft:repeater", "minecraft:repeating_command_block", "minecraft:respawn_anchor", "minecraft:rib_armor_trim_smithing_template", "minecraft:rooted_dirt", "minecraft:rose_bush", "minecraft:rotten_flesh", "minecraft:saddle", "minecraft:salmon", "minecraft:salmon_bucket", "minecraft:salmon_spawn_egg", "minecraft:sand", "minecraft:sandstone", "minecraft:sandstone_slab", "minecraft:sandstone_stairs", "minecraft:sandstone_wall", "minecraft:scaffolding", "minecraft:sculk", "minecraft:sculk_catalyst", "minecraft:sculk_sensor", "minecraft:sculk_shrieker", "minecraft:sculk_vein", "minecraft:sheaf_pottery_sherd", "minecraft:shears", "minecraft:sheep_spawn_egg", "minecraft:shelter_pottery_sherd", "minecraft:shield", "minecraft:shroomlight", "minecraft:shulker_box", "minecraft:shulker_shell", "minecraft:shulker_spawn_egg", "minecraft:silence_armor_trim_smithing_template", "minecraft:silverfish_spawn_egg", "minecraft:skeleton_horse_spawn_egg", "minecraft:skeleton_spawn_egg", "minecraft:skull_banner_pattern", "minecraft:skull_pottery_sherd", "minecraft:slime_ball", "minecraft:slime_block", "minecraft:slime_spawn_egg", "minecraft:small_amethyst_bud", "minecraft:small_dripleaf", "minecraft:smithing_table", "minecraft:smoker", "minecraft:smooth_basalt", "minecraft:smooth_quartz", "minecraft:smooth_quartz_slab", "minecraft:smooth_quartz_stairs", "minecraft:smooth_red_sandstone", "minecraft:smooth_red_sandstone_slab", "minecraft:smooth_red_sandstone_stairs", "minecraft:smooth_sandstone", "minecraft:smooth_sandstone_slab", "minecraft:smooth_sandstone_stairs", "minecraft:smooth_stone", "minecraft:smooth_stone_slab", "minecraft:sniffer_egg", "minecraft:sniffer_spawn_egg", "minecraft:snort_pottery_sherd", "minecraft:snout_armor_trim_smithing_template", "minecraft:snow", "minecraft:snow_block", "minecraft:snow_golem_spawn_egg", "minecraft:snowball", "minecraft:soul_campfire", "minecraft:soul_lantern", "minecraft:soul_sand", "minecraft:soul_soil", "minecraft:soul_torch", "minecraft:spawner", "minecraft:spectral_arrow", "minecraft:spider_eye", "minecraft:spider_spawn_egg", "minecraft:spire_armor_trim_smithing_template", "minecraft:splash_potion", "minecraft:sponge", "minecraft:spruce_boat", "minecraft:spruce_button", "minecraft:spruce_door", "minecraft:spruce_fence", "minecraft:spruce_fence_gate", "minecraft:spruce_hanging_sign", "minecraft:spruce_leaves", "minecraft:spruce_log", "minecraft:spruce_planks", "minecraft:spruce_pressure_plate", "minecraft:spruce_sapling", "minecraft:spruce_sign", "minecraft:spruce_slab", "minecraft:spruce_stairs", "minecraft:spruce_trapdoor", "minecraft:spruce_wood", "minecraft:spyglass", "minecraft:squid_spawn_egg", "minecraft:stick", "minecraft:sticky_piston", "minecraft:stone", "minecraft:stone_axe", "minecraft:stone_brick_slab", "minecraft:stone_brick_stairs", "minecraft:stone_brick_wall", "minecraft:stone_bricks", "minecraft:stone_button", "minecraft:stone_hoe", "minecraft:stone_pickaxe", "minecraft:stone_pressure_plate", "minecraft:stone_shovel", "minecraft:stone_slab", "minecraft:stone_stairs", "minecraft:stone_sword", "minecraft:stonecutter", "minecraft:stray_spawn_egg", "minecraft:strider_spawn_egg", "minecraft:string", "minecraft:stripped_acacia_log", "minecraft:stripped_acacia_wood", "minecraft:stripped_bamboo_block", "minecraft:stripped_birch_log", "minecraft:stripped_birch_wood", "minecraft:stripped_cherry_log", "minecraft:stripped_cherry_wood", "minecraft:stripped_crimson_hyphae", "minecraft:stripped_crimson_stem", "minecraft:stripped_dark_oak_log", "minecraft:stripped_dark_oak_wood", "minecraft:stripped_jungle_log", "minecraft:stripped_jungle_wood", "minecraft:stripped_mangrove_log", "minecraft:stripped_mangrove_wood", "minecraft:stripped_oak_log", "minecraft:stripped_oak_wood", "minecraft:stripped_pale_oak_log", "minecraft:stripped_pale_oak_wood", "minecraft:stripped_spruce_log", "minecraft:stripped_spruce_wood", "minecraft:stripped_warped_hyphae", "minecraft:stripped_warped_stem", "minecraft:structure_block", "minecraft:structure_void", "minecraft:sugar", "minecraft:sugar_cane", "minecraft:sunflower", "minecraft:sweet_berries", "minecraft:tadpole_bucket", "minecraft:tadpole_spawn_egg", "minecraft:tall_grass", "minecraft:target", "minecraft:terracotta", "minecraft:tinted_glass", "minecraft:tipped_arrow", "minecraft:tnt", "minecraft:tnt_minecart", "minecraft:torch", "minecraft:torchflower", "minecraft:torchflower_seeds", "minecraft:totem_of_undying", "minecraft:trader_llama_spawn_egg", "minecraft:trapped_chest", "minecraft:trial_chambers_map", "minecraft:trial_key", "minecraft:trial_spawner", "minecraft:trident", "minecraft:tripwire_hook", "minecraft:tropical_fish", "minecraft:tropical_fish_bucket", "minecraft:tropical_fish_spawn_egg", "minecraft:tube_coral", "minecraft:tube_coral_block", "minecraft:tube_coral_fan", "minecraft:tuff", "minecraft:tuff_brick_slab", "minecraft:tuff_brick_stairs", "minecraft:tuff_brick_wall", "minecraft:tuff_bricks", "minecraft:tuff_slab", "minecraft:tuff_stairs", "minecraft:tuff_wall", "minecraft:turtle_egg", "minecraft:turtle_helmet", "minecraft:turtle_scute", "minecraft:turtle_spawn_egg", "minecraft:twisting_vines", "minecraft:verdant_froglight", "minecraft:vex_armor_trim_smithing_template", "minecraft:vex_spawn_egg", "minecraft:villager_spawn_egg", "minecraft:vindicator_spawn_egg", "minecraft:vine", "minecraft:wandering_trader_spawn_egg", "minecraft:ward_armor_trim_smithing_template", "minecraft:warden_spawn_egg", "minecraft:warped_button", "minecraft:warped_door", "minecraft:warped_fence", "minecraft:warped_fence_gate", "minecraft:warped_fungus", "minecraft:warped_fungus_on_a_stick", "minecraft:warped_hanging_sign", "minecraft:warped_hyphae", "minecraft:warped_nylium", "minecraft:warped_planks", "minecraft:warped_pressure_plate", "minecraft:warped_roots", "minecraft:warped_sign", "minecraft:warped_slab", "minecraft:warped_stairs", "minecraft:warped_stem", "minecraft:warped_trapdoor", "minecraft:warped_wart_block", "minecraft:water_bucket", "minecraft:water_bucket", "minecraft:waxed_copper_block", "minecraft:waxed_copper_bulb", "minecraft:waxed_copper_door", "minecraft:waxed_copper_grate", "minecraft:waxed_copper_trapdoor", "minecraft:waxed_cut_copper", "minecraft:waxed_cut_copper_slab", "minecraft:waxed_cut_copper_stairs", "minecraft:waxed_exposed_copper", "minecraft:waxed_exposed_copper_bulb", "minecraft:waxed_exposed_copper_door", "minecraft:waxed_exposed_copper_grate", "minecraft:waxed_exposed_copper_trapdoor", "minecraft:waxed_exposed_cut_copper", "minecraft:waxed_exposed_cut_copper_slab", "minecraft:waxed_exposed_cut_copper_stairs", "minecraft:waxed_oxidized_copper", "minecraft:waxed_oxidized_copper_bulb", "minecraft:waxed_oxidized_copper_door", "minecraft:waxed_oxidized_copper_grate", "minecraft:waxed_oxidized_copper_trapdoor", "minecraft:waxed_oxidized_cut_copper", "minecraft:waxed_oxidized_cut_copper_slab", "minecraft:waxed_oxidized_cut_copper_stairs", "minecraft:waxed_weathered_copper", "minecraft:waxed_weathered_copper_bulb", "minecraft:waxed_weathered_copper_door", "minecraft:waxed_weathered_copper_grate", "minecraft:waxed_weathered_copper_trapdoor", "minecraft:waxed_weathered_cut_copper", "minecraft:waxed_weathered_cut_copper_slab", "minecraft:waxed_weathered_cut_copper_stairs", "minecraft:wayfinder_armor_trim_smithing_template", "minecraft:weathered_copper", "minecraft:weathered_copper_bulb", "minecraft:weathered_copper_door", "minecraft:weathered_copper_grate", "minecraft:weathered_copper_trapdoor", "minecraft:weathered_cut_copper", "minecraft:weathered_cut_copper_slab", "minecraft:weathered_cut_copper_stairs", "minecraft:weaver_pottery_sherd", "minecraft:wet_sponge", "minecraft:wheat", "minecraft:wheat_seeds", "minecraft:white_banner", "minecraft:white_bed", "minecraft:white_candle", "minecraft:white_carpet", "minecraft:white_concrete", "minecraft:white_concrete_powder", "minecraft:white_dye", "minecraft:white_glazed_terracotta", "minecraft:white_shulker_box", "minecraft:white_stained_glass", "minecraft:white_stained_glass_pane", "minecraft:white_terracotta", "minecraft:white_tulip", "minecraft:white_wool", "minecraft:witch_spawn_egg", "minecraft:wither_rose", "minecraft:wither_skeleton_spawn_egg", "minecraft:wither_spawn_egg", "minecraft:wolf_spawn_egg", "minecraft:wooden_axe", "minecraft:wooden_hoe", "minecraft:wooden_pickaxe", "minecraft:wooden_shovel", "minecraft:wooden_sword", "minecraft:written_book", "minecraft:yellow_banner", "minecraft:yellow_bed", "minecraft:yellow_candle", "minecraft:yellow_carpet", "minecraft:yellow_concrete", "minecraft:yellow_concrete_powder", "minecraft:yellow_dye", "minecraft:yellow_glazed_terracotta", "minecraft:yellow_shulker_box", "minecraft:yellow_stained_glass", "minecraft:yellow_stained_glass_pane", "minecraft:yellow_terracotta", "minecraft:yellow_wool", "minecraft:zoglin_spawn_egg", "minecraft:zombie_head", "minecraft:zombie_horse_spawn_egg", "minecraft:zombie_spawn_egg", "minecraft:zombie_villager_spawn_egg", "minecraft:zombified_piglin_spawn_egg"]
+        self.give_item = ttk.Combobox(tab, values=items, width=30)
+        self.give_item.set("minecraft:diamond")
+        self.give_item.grid(row=2, column=1, padx=5, pady=5)
+        
+        # Количество
+        ttk.Label(tab, text="Количество:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.give_amount = ttk.Spinbox(tab, from_=1, to=64, width=28)
+        self.give_amount.set(1)
+        self.give_amount.grid(row=3, column=1, padx=5, pady=5)
+        
+        # NBT данные
+        ttk.Label(tab, text="NBT данные:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        # Фрейм для NBT
+        nbt_frame = ttk.Frame(tab)
+        nbt_frame.grid(row=4, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
+        
+        self.give_nbt = ttk.Entry(nbt_frame, width=40)
+        self.give_nbt.insert(0, "")
+        self.give_nbt.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        ttk.Button(nbt_frame, text="Редактор NBT", command=self.open_nbt_editor).pack(side=tk.LEFT, padx=5)
+        
+        ttk.Label(tab, text="").grid(row=5, column=0)
+        ttk.Label(tab, foreground="red", text="!Внимание при использовании Редактора NBT учтите что не все пердметы могут поддерживать определеный типы даных!").place(x=10, y=125)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_give).grid(row=6, column=0, columnspan=2, pady=5)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=7, column=0, sticky=tk.W, padx=5, pady=5)
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.give_output)).grid(row=7, column=1, columnspan=2, pady=5)
+        self.give_output = scrolledtext.ScrolledText(tab, height=15, width=75)
+        self.give_output.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
+        
+        
+        
+    def on_target_change(self, event):
+        """Обработчик изменения цели"""
+        if self.give_target.get() == "Игрок":
+            self.player_name_frame.grid()
+        else:
+            self.player_name_frame.grid_remove()
+            
+    def open_nbt_editor(self):
+        """Открывает окно NBT редактора"""
+        current_nbt = self.give_nbt.get()
+        NBTEditorWindow(self.root, current_nbt, self.update_nbt_callback)
+        
+    def update_nbt_callback(self, nbt_string):
+        """Обновляет поле NBT после редактирования"""
+        self.give_nbt.delete(0, tk.END)
+        self.give_nbt.insert(0, nbt_string)
+        self.generate_give()
+        
+    # Остальные методы остаются без изменений...
+    def create_teleport_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Телепортация")
+        
+        # Цель телепортации
+        ttk.Label(tab, text="Кого телепортировать:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_target = ttk.Combobox(tab, values=["@p", "@r", "@a", "@e", "Игрок"], width=20)
+        self.tp_target.set("@p")
+        self.tp_target.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Координаты
+        ttk.Label(tab, text="Координаты X:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_x = ttk.Entry(tab, width=15)
+        self.tp_x.insert(0, "~")
+        self.tp_x.grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Координаты Y:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_y = ttk.Entry(tab, width=15)
+        self.tp_y.insert(0, "~")
+        self.tp_y.grid(row=2, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Координаты Z:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_z = ttk.Entry(tab, width=15)
+        self.tp_z.insert(0, "~")
+        self.tp_z.grid(row=3, column=1, padx=5, pady=5)
+        
+        # Поворот и наклон
+        ttk.Label(tab, text="Поворот (yaw):").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_yaw = ttk.Entry(tab, width=15)
+        self.tp_yaw.insert(0, "~")
+        self.tp_yaw.grid(row=4, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Наклон (pitch):").grid(row=5, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_pitch = ttk.Entry(tab, width=15)
+        self.tp_pitch.insert(0, "~")
+        self.tp_pitch.grid(row=5, column=1, padx=5, pady=5)
+        
+        # Чекбоксы
+        self.tp_check = tk.BooleanVar()
+        ttk.Checkbutton(tab, text="Проверка на безопасность", variable=self.tp_check).grid(row=6, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_teleport).grid(row=7, column=0, columnspan=2, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=8, column=0, sticky=tk.W, padx=5, pady=5)
+        self.tp_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.tp_output.grid(row=9, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.tp_output)).grid(row=10, column=0, columnspan=2, pady=5)
+        
+    def create_summon_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Призыв существ")
+        
+        # Существо
+        ttk.Label(tab, text="Существо:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        entities = ["minecraft:allay", "minecraft:armadillo", "minecraft:axolotl", "minecraft:bat", "minecraft:bee", "minecraft:blaze", "minecraft:bogged", "minecraft:breeze", "minecraft:camel", "minecraft:cat", "minecraft:cave_spider", "minecraft:chicken", "minecraft:cod", "minecraft:cow", "minecraft:creeper", "minecraft:dolphin", "minecraft:donkey", "minecraft:drowned", "minecraft:elder_guardian", "minecraft:ender_dragon", "minecraft:enderman", "minecraft:endermite", "minecraft:evoker", "minecraft:fox", "minecraft:frog", "minecraft:ghast", "minecraft:ghastling", "minecraft:glow_squid", "minecraft:goat", "minecraft:guardian", "minecraft:happy_ghast", "minecraft:hoglin", "minecraft:horse", "minecraft:husk", "minecraft:iron_golem", "minecraft:llama", "minecraft:magma_cube", "minecraft:mooshroom", "minecraft:mule", "minecraft:ocelot", "minecraft:panda", "minecraft:parrot", "minecraft:phantom", "minecraft:pig", "minecraft:piglin", "minecraft:piglin_brute", "minecraft:pillager", "minecraft:polar_bear", "minecraft:pufferfish", "minecraft:rabbit", "minecraft:ravager", "minecraft:salmon", "minecraft:sheep", "minecraft:shulker", "minecraft:silverfish", "minecraft:skeleton", "minecraft:skeleton_horse", "minecraft:slime", "minecraft:sniffer", "minecraft:snow_golem", "minecraft:spider", "minecraft:squid", "minecraft:stray", "minecraft:strider", "minecraft:tadpole", "minecraft:trader_llama", "minecraft:tropical_fish", "minecraft:turtle", "minecraft:vex", "minecraft:villager", "minecraft:vindicator", "minecraft:wandering_trader", "minecraft:warden", "minecraft:witch", "minecraft:wither", "minecraft:wither_skeleton", "minecraft:wolf", "minecraft:zoglin", "minecraft:zombie", "minecraft:zombie_horse", "minecraft:zombie_villager", "minecraft:zombified_piglin", "minecraft:area_effect_cloud", "minecraft:armor_stand", "minecraft:arrow", "minecraft:boat", "minecraft:chest_boat", "minecraft:dragon_fireball", "minecraft:egg", "minecraft:ender_pearl", "minecraft:experience_bottle", "minecraft:experience_orb", "minecraft:eye_of_ender", "minecraft:falling_block", "minecraft:fireball", "minecraft:firework_rocket", "minecraft:fishing_bobber", "minecraft:item", "minecraft:item_frame", "minecraft:glow_item_frame", "minecraft:leash_knot", "minecraft:lightning_bolt", "minecraft:marker", "minecraft:minecart", "minecraft:chest_minecart", "minecraft:command_block_minecart", "minecraft:furnace_minecart", "minecraft:hopper_minecart", "minecraft:spawner_minecart", "minecraft:tnt_minecart", "minecraft:painting", "minecraft:potion", "minecraft:shulker_bullet", "minecraft:small_fireball", "minecraft:spectral_arrow", "minecraft:tnt", "minecraft:trident", "minecraft:wind_charge", "minecraft:wither_skull"]
+        self.summon_entity = ttk.Combobox(tab, values=entities, width=20)
+        self.summon_entity.set("minecraft:zombie")
+        self.summon_entity.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Координаты
+        ttk.Label(tab, text="X:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.summon_x = ttk.Entry(tab, width=15)
+        self.summon_x.insert(0, "~")
+        self.summon_x.grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Y:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.summon_y = ttk.Entry(tab, width=15)
+        self.summon_y.insert(0, "~")
+        self.summon_y.grid(row=2, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Z:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.summon_z = ttk.Entry(tab, width=15)
+        self.summon_z.insert(0, "~")
+        self.summon_z.grid(row=3, column=1, padx=5, pady=5)
+        
+        # NBT данные
+        ttk.Label(tab, text="NBT данные (опционально):").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        self.summon_nbt = ttk.Entry(tab, width=40)
+        self.summon_nbt.insert(0, "")
+        self.summon_nbt.grid(row=4, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_summon).grid(row=5, column=0, columnspan=2, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=6, column=0, sticky=tk.W, padx=5, pady=5)
+        self.summon_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.summon_output.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.summon_output)).grid(row=8, column=0, columnspan=2, pady=5)
+        
+    def create_setblock_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Установка блоков")
+        
+        # Координаты
+        ttk.Label(tab, text="X:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.block_x = ttk.Entry(tab, width=15)
+        self.block_x.insert(0, "~")
+        self.block_x.grid(row=0, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Y:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.block_y = ttk.Entry(tab, width=15)
+        self.block_y.insert(0, "~")
+        self.block_y.grid(row=1, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Z:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.block_z = ttk.Entry(tab, width=15)
+        self.block_z.insert(0, "~")
+        self.block_z.grid(row=2, column=1, padx=5, pady=5)
+        
+        # Тип блока
+        ttk.Label(tab, text="Блок:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        blocks = ["minecraft:acacia_button", "minecraft:acacia_door", "minecraft:acacia_fence", "minecraft:acacia_fence_gate", "minecraft:acacia_hanging_sign", "minecraft:acacia_leaves", "minecraft:acacia_log", "minecraft:acacia_planks", "minecraft:acacia_pressure_plate", "minecraft:acacia_sapling", "minecraft:acacia_sign", "minecraft:acacia_slab", "minecraft:acacia_stairs", "minecraft:acacia_trapdoor", "minecraft:acacia_wall_hanging_sign", "minecraft:acacia_wall_sign", "minecraft:acacia_wood", "minecraft:activator_rail", "minecraft:air", "minecraft:allium", "minecraft:amethyst_block", "minecraft:amethyst_cluster", "minecraft:ancient_debris", "minecraft:andesite", "minecraft:andesite_slab", "minecraft:andesite_stairs", "minecraft:andesite_wall", "minecraft:anvil", "minecraft:attached_melon_stem", "minecraft:attached_pumpkin_stem", "minecraft:azalea", "minecraft:azalea_leaves", "minecraft:azure_bluet", "minecraft:bamboo", "minecraft:bamboo_block", "minecraft:bamboo_button", "minecraft:bamboo_door", "minecraft:bamboo_fence", "minecraft:bamboo_fence_gate", "minecraft:bamboo_hanging_sign", "minecraft:bamboo_mosaic", "minecraft:bamboo_mosaic_slab", "minecraft:bamboo_mosaic_stairs", "minecraft:bamboo_planks", "minecraft:bamboo_pressure_plate", "minecraft:bamboo_slab", "minecraft:bamboo_stairs", "minecraft:bamboo_trapdoor", "minecraft:bamboo_wall_hanging_sign", "minecraft:bamboo_wall_sign", "minecraft:barrel", "minecraft:barrier", "minecraft:basalt", "minecraft:beacon", "minecraft:bedrock", "minecraft:bee_nest", "minecraft:beehive", "minecraft:beetroots", "minecraft:bell", "minecraft:big_dripleaf", "minecraft:big_dripleaf_stem", "minecraft:birch_button", "minecraft:birch_door", "minecraft:birch_fence", "minecraft:birch_fence_gate", "minecraft:birch_hanging_sign", "minecraft:birch_leaves", "minecraft:birch_log", "minecraft:birch_planks", "minecraft:birch_pressure_plate", "minecraft:birch_sapling", "minecraft:birch_sign", "minecraft:birch_slab", "minecraft:birch_stairs", "minecraft:birch_trapdoor", "minecraft:birch_wall_hanging_sign", "minecraft:birch_wall_sign", "minecraft:birch_wood", "minecraft:black_banner", "minecraft:black_bed", "minecraft:black_candle", "minecraft:black_candle_cake", "minecraft:black_carpet", "minecraft:black_concrete", "minecraft:black_concrete_powder", "minecraft:black_glazed_terracotta", "minecraft:black_shulker_box", "minecraft:black_stained_glass", "minecraft:black_stained_glass_pane", "minecraft:black_terracotta", "minecraft:black_wool", "minecraft:blast_furnace", "minecraft:blue_banner", "minecraft:blue_bed", "minecraft:blue_candle", "minecraft:blue_candle_cake", "minecraft:blue_carpet", "minecraft:blue_concrete", "minecraft:blue_concrete_powder", "minecraft:blue_glazed_terracotta", "minecraft:blue_ice", "minecraft:blue_orchid", "minecraft:blue_shulker_box", "minecraft:blue_stained_glass", "minecraft:blue_stained_glass_pane", "minecraft:blue_terracotta", "minecraft:blue_wool", "minecraft:bone_block", "minecraft:bookshelf", "minecraft:brain_coral", "minecraft:brain_coral_block", "minecraft:brain_coral_fan", "minecraft:brain_coral_wall_fan", "minecraft:brewing_stand", "minecraft:brick_slab", "minecraft:brick_stairs", "minecraft:brick_wall", "minecraft:bricks", "minecraft:brown_banner", "minecraft:brown_bed", "minecraft:brown_candle", "minecraft:brown_candle_cake", "minecraft:brown_carpet", "minecraft:brown_concrete", "minecraft:brown_concrete_powder", "minecraft:brown_glazed_terracotta", "minecraft:brown_mushroom", "minecraft:brown_mushroom_block", "minecraft:brown_shulker_box", "minecraft:brown_stained_glass", "minecraft:brown_stained_glass_pane", "minecraft:brown_terracotta", "minecraft:brown_wool", "minecraft:bubble_coral", "minecraft:bubble_coral_block", "minecraft:bubble_coral_fan", "minecraft:bubble_coral_wall_fan", "minecraft:budding_amethyst", "minecraft:cactus", "minecraft:cake", "minecraft:calcite", "minecraft:calibrated_sculk_sensor", "minecraft:campfire", "minecraft:candle", "minecraft:candle_cake", "minecraft:carrots", "minecraft:cartography_table", "minecraft:carved_pumpkin", "minecraft:cauldron", "minecraft:cave_air", "minecraft:cave_vines", "minecraft:cave_vines_plant", "minecraft:chain", "minecraft:chain_command_block", "minecraft:chest", "minecraft:chiseled_deepslate", "minecraft:chiseled_nether_bricks", "minecraft:chiseled_polished_blackstone", "minecraft:chiseled_quartz_block", "minecraft:chiseled_red_sandstone", "minecraft:chiseled_sandstone", "minecraft:chiseled_stone_bricks", "minecraft:chorus_flower", "minecraft:chorus_plant", "minecraft:clay", "minecraft:coal_block", "minecraft:coal_ore", "minecraft:coarse_dirt", "minecraft:cobbled_deepslate", "minecraft:cobbled_deepslate_slab", "minecraft:cobbled_deepslate_stairs", "minecraft:cobbled_deepslate_wall", "minecraft:cobblestone", "minecraft:cobblestone_slab", "minecraft:cobblestone_stairs", "minecraft:cobblestone_wall", "minecraft:cobweb", "minecraft:cocoa", "minecraft:command_block", "minecraft:comparator", "minecraft:composter", "minecraft:conduit", "minecraft:copper_block", "minecraft:copper_bulb", "minecraft:copper_door", "minecraft:copper_grate", "minecraft:copper_ore", "minecraft:copper_trapdoor", "minecraft:cornflower", "minecraft:cracked_deepslate_bricks", "minecraft:cracked_deepslate_tiles", "minecraft:cracked_nether_bricks", "minecraft:cracked_polished_blackstone_bricks", "minecraft:cracked_stone_bricks", "minecraft:crafting_table", "minecraft:creeper_head", "minecraft:creeper_wall_head", "minecraft:crimson_button", "minecraft:crimson_door", "minecraft:crimson_fence", "minecraft:crimson_fence_gate", "minecraft:crimson_fungus", "minecraft:crimson_hanging_sign", "minecraft:crimson_hyphae", "minecraft:crimson_nylium", "minecraft:crimson_planks", "minecraft:crimson_pressure_plate", "minecraft:crimson_roots", "minecraft:crimson_sign", "minecraft:crimson_slab", "minecraft:crimson_stairs", "minecraft:crimson_stem", "minecraft:crimson_trapdoor", "minecraft:crimson_wall_hanging_sign", "minecraft:crimson_wall_sign", "minecraft:crying_obsidian", "minecraft:cut_copper", "minecraft:cut_copper_slab", "minecraft:cut_copper_stairs", "minecraft:cut_red_sandstone", "minecraft:cut_red_sandstone_slab", "minecraft:cut_sandstone", "minecraft:cut_sandstone_slab", "minecraft:cyan_banner", "minecraft:cyan_bed", "minecraft:cyan_candle", "minecraft:cyan_candle_cake", "minecraft:cyan_carpet", "minecraft:cyan_concrete", "minecraft:cyan_concrete_powder", "minecraft:cyan_glazed_terracotta", "minecraft:cyan_shulker_box", "minecraft:cyan_stained_glass", "minecraft:cyan_stained_glass_pane", "minecraft:cyan_terracotta", "minecraft:cyan_wool", "minecraft:damaged_anvil", "minecraft:dandelion", "minecraft:dark_oak_button", "minecraft:dark_oak_door", "minecraft:dark_oak_fence", "minecraft:dark_oak_fence_gate", "minecraft:dark_oak_hanging_sign", "minecraft:dark_oak_leaves", "minecraft:dark_oak_log", "minecraft:dark_oak_planks", "minecraft:dark_oak_pressure_plate", "minecraft:dark_oak_sapling", "minecraft:dark_oak_sign", "minecraft:dark_oak_slab", "minecraft:dark_oak_stairs", "minecraft:dark_oak_trapdoor", "minecraft:dark_oak_wall_hanging_sign", "minecraft:dark_oak_wall_sign", "minecraft:dark_oak_wood", "minecraft:dark_prismarine", "minecraft:dark_prismarine_slab", "minecraft:dark_prismarine_stairs", "minecraft:daylight_detector", "minecraft:dead_brain_coral", "minecraft:dead_brain_coral_block", "minecraft:dead_brain_coral_fan", "minecraft:dead_brain_coral_wall_fan", "minecraft:dead_bubble_coral", "minecraft:dead_bubble_coral_block", "minecraft:dead_bubble_coral_fan", "minecraft:dead_bubble_coral_wall_fan", "minecraft:dead_bush", "minecraft:dead_fire_coral", "minecraft:dead_fire_coral_block", "minecraft:dead_fire_coral_fan", "minecraft:dead_fire_coral_wall_fan", "minecraft:dead_horn_coral", "minecraft:dead_horn_coral_block", "minecraft:dead_horn_coral_fan", "minecraft:dead_horn_coral_wall_fan", "minecraft:dead_tube_coral", "minecraft:dead_tube_coral_block", "minecraft:dead_tube_coral_fan", "minecraft:dead_tube_coral_wall_fan", "minecraft:deepslate", "minecraft:deepslate_brick_slab", "minecraft:deepslate_brick_stairs", "minecraft:deepslate_brick_wall", "minecraft:deepslate_bricks", "minecraft:deepslate_coal_ore", "minecraft:deepslate_copper_ore", "minecraft:deepslate_diamond_ore", "minecraft:deepslate_emerald_ore", "minecraft:deepslate_gold_ore", "minecraft:deepslate_iron_ore", "minecraft:deepslate_lapis_ore", "minecraft:deepslate_redstone_ore", "minecraft:deepslate_tile_slab", "minecraft:deepslate_tile_stairs", "minecraft:deepslate_tile_wall", "minecraft:deepslate_tiles", "minecraft:detector_rail", "minecraft:diamond_block", "minecraft:diamond_ore", "minecraft:diorite", "minecraft:diorite_slab", "minecraft:diorite_stairs", "minecraft:diorite_wall", "minecraft:dirt", "minecraft:dirt_path", "minecraft:dispenser", "minecraft:dragon_egg", "minecraft:dragon_head", "minecraft:dragon_wall_head", "minecraft:dried_kelp_block", "minecraft:dripstone_block", "minecraft:dropper", "minecraft:emerald_block", "minecraft:emerald_ore", "minecraft:enchanting_table", "minecraft:end_gateway", "minecraft:end_portal", "minecraft:end_portal_frame", "minecraft:end_rod", "minecraft:end_stone", "minecraft:end_stone_brick_slab", "minecraft:end_stone_brick_stairs", "minecraft:end_stone_brick_wall", "minecraft:end_stone_bricks", "minecraft:ender_chest", "minecraft:exposed_copper", "minecraft:exposed_copper_bulb", "minecraft:exposed_copper_door", "minecraft:exposed_copper_grate", "minecraft:exposed_copper_trapdoor", "minecraft:exposed_cut_copper", "minecraft:exposed_cut_copper_slab", "minecraft:exposed_cut_copper_stairs", "minecraft:farmland", "minecraft:fern", "minecraft:fire", "minecraft:fire_coral", "minecraft:fire_coral_block", "minecraft:fire_coral_fan", "minecraft:fire_coral_wall_fan", "minecraft:fletching_table", "minecraft:flower_pot", "minecraft:flowering_azalea", "minecraft:flowering_azalea_leaves", "minecraft:frogspawn", "minecraft:frosted_ice", "minecraft:furnace", "minecraft:gilded_blackstone", "minecraft:glass", "minecraft:glass_pane", "minecraft:glow_lichen", "minecraft:glowstone", "minecraft:gold_block", "minecraft:gold_ore", "minecraft:granite", "minecraft:granite_slab", "minecraft:granite_stairs", "minecraft:granite_wall", "minecraft:grass_block", "minecraft:gravel", "minecraft:gray_banner", "minecraft:gray_bed", "minecraft:gray_candle", "minecraft:gray_candle_cake", "minecraft:gray_carpet", "minecraft:gray_concrete", "minecraft:gray_concrete_powder", "minecraft:gray_glazed_terracotta", "minecraft:gray_shulker_box", "minecraft:gray_stained_glass", "minecraft:gray_stained_glass_pane", "minecraft:gray_terracotta", "minecraft:gray_wool", "minecraft:green_banner", "minecraft:green_bed", "minecraft:green_candle", "minecraft:green_candle_cake", "minecraft:green_carpet", "minecraft:green_concrete", "minecraft:green_concrete_powder", "minecraft:green_glazed_terracotta", "minecraft:green_shulker_box", "minecraft:green_stained_glass", "minecraft:green_stained_glass_pane", "minecraft:green_terracotta", "minecraft:green_wool", "minecraft:grindstone", "minecraft:hanging_roots", "minecraft:hay_block", "minecraft:heavy_weighted_pressure_plate", "minecraft:honey_block", "minecraft:honeycomb_block", "minecraft:hopper", "minecraft:horn_coral", "minecraft:horn_coral_block", "minecraft:horn_coral_fan", "minecraft:horn_coral_wall_fan", "minecraft:ice", "minecraft:infested_chiseled_stone_bricks", "minecraft:infested_cobblestone", "minecraft:infested_cracked_stone_bricks", "minecraft:infested_deepslate", "minecraft:infested_mossy_stone_bricks", "minecraft:infested_stone", "minecraft:infested_stone_bricks", "minecraft:iron_bars", "minecraft:iron_block", "minecraft:iron_door", "minecraft:iron_ore", "minecraft:iron_trapdoor", "minecraft:jack_o_lantern", "minecraft:jigsaw", "minecraft:jukebox", "minecraft:jungle_button", "minecraft:jungle_door", "minecraft:jungle_fence", "minecraft:jungle_fence_gate", "minecraft:jungle_hanging_sign", "minecraft:jungle_leaves", "minecraft:jungle_log", "minecraft:jungle_planks", "minecraft:jungle_pressure_plate", "minecraft:jungle_sapling", "minecraft:jungle_sign", "minecraft:jungle_slab", "minecraft:jungle_stairs", "minecraft:jungle_trapdoor", "minecraft:jungle_wall_hanging_sign", "minecraft:jungle_wall_sign", "minecraft:jungle_wood", "minecraft:kelp", "minecraft:kelp_plant", "minecraft:ladder", "minecraft:lantern", "minecraft:lapis_block", "minecraft:lapis_ore", "minecraft:large_amethyst_bud", "minecraft:large_fern", "minecraft:lava", "minecraft:lava_cauldron", "minecraft:lectern", "minecraft:lever", "minecraft:light", "minecraft:light_blue_banner", "minecraft:light_blue_bed", "minecraft:light_blue_candle", "minecraft:light_blue_candle_cake", "minecraft:light_blue_carpet", "minecraft:light_blue_concrete", "minecraft:light_blue_concrete_powder", "minecraft:light_blue_glazed_terracotta", "minecraft:light_blue_shulker_box", "minecraft:light_blue_stained_glass", "minecraft:light_blue_stained_glass_pane", "minecraft:light_blue_terracotta", "minecraft:light_blue_wool", "minecraft:light_gray_banner", "minecraft:light_gray_bed", "minecraft:light_gray_candle", "minecraft:light_gray_candle_cake", "minecraft:light_gray_carpet", "minecraft:light_gray_concrete", "minecraft:light_gray_concrete_powder", "minecraft:light_gray_glazed_terracotta", "minecraft:light_gray_shulker_box", "minecraft:light_gray_stained_glass", "minecraft:light_gray_stained_glass_pane", "minecraft:light_gray_terracotta", "minecraft:light_gray_wool", "minecraft:light_weighted_pressure_plate", "minecraft:lightning_rod", "minecraft:lilac", "minecraft:lily_of_the_valley", "minecraft:lily_pad", "minecraft:lime_banner", "minecraft:lime_bed", "minecraft:lime_candle", "minecraft:lime_candle_cake", "minecraft:lime_carpet", "minecraft:lime_concrete", "minecraft:lime_concrete_powder", "minecraft:lime_glazed_terracotta", "minecraft:lime_shulker_box", "minecraft:lime_stained_glass", "minecraft:lime_stained_glass_pane", "minecraft:lime_terracotta", "minecraft:lime_wool", "minecraft:lodestone", "minecraft:loom", "minecraft:magenta_banner", "minecraft:magenta_bed", "minecraft:magenta_candle", "minecraft:magenta_candle_cake", "minecraft:magenta_carpet", "minecraft:magenta_concrete", "minecraft:magenta_concrete_powder", "minecraft:magenta_glazed_terracotta", "minecraft:magenta_shulker_box", "minecraft:magenta_stained_glass", "minecraft:magenta_stained_glass_pane", "minecraft:magenta_terracotta", "minecraft:magenta_wool", "minecraft:magma_block", "minecraft:mangrove_button", "minecraft:mangrove_door", "minecraft:mangrove_fence", "minecraft:mangrove_fence_gate", "minecraft:mangrove_hanging_sign", "minecraft:mangrove_leaves", "minecraft:mangrove_log", "minecraft:mangrove_planks", "minecraft:mangrove_pressure_plate", "minecraft:mangrove_propagule", "minecraft:mangrove_roots", "minecraft:mangrove_sign", "minecraft:mangrove_slab", "minecraft:mangrove_stairs", "minecraft:mangrove_trapdoor", "minecraft:mangrove_wall_hanging_sign", "minecraft:mangrove_wall_sign", "minecraft:mangrove_wood", "minecraft:medium_amethyst_bud", "minecraft:melon", "minecraft:melon_stem", "minecraft:moss_block", "minecraft:moss_carpet", "minecraft:mossy_cobblestone", "minecraft:mossy_cobblestone_slab", "minecraft:mossy_cobblestone_stairs", "minecraft:mossy_cobblestone_wall", "minecraft:mossy_stone_brick_slab", "minecraft:mossy_stone_brick_stairs", "minecraft:mossy_stone_brick_wall", "minecraft:mossy_stone_bricks", "minecraft:moving_piston", "minecraft:mud", "minecraft:mud_brick_slab", "minecraft:mud_brick_stairs", "minecraft:mud_brick_wall", "minecraft:mud_bricks", "minecraft:muddy_mangrove_roots", "minecraft:mushroom_stem", "minecraft:mycelium", "minecraft:nether_brick_fence", "minecraft:nether_brick_slab", "minecraft:nether_brick_stairs", "minecraft:nether_brick_wall", "minecraft:nether_bricks", "minecraft:nether_gold_ore", "minecraft:nether_portal", "minecraft:nether_quartz_ore", "minecraft:nether_sprouts", "minecraft:nether_wart", "minecraft:nether_wart_block", "minecraft:netherite_block", "minecraft:netherrack", "minecraft:note_block", "minecraft:oak_button", "minecraft:oak_door", "minecraft:oak_fence", "minecraft:oak_fence_gate", "minecraft:oak_hanging_sign", "minecraft:oak_leaves", "minecraft:oak_log", "minecraft:oak_planks", "minecraft:oak_pressure_plate", "minecraft:oak_sapling", "minecraft:oak_sign", "minecraft:oak_slab", "minecraft:oak_stairs", "minecraft:oak_trapdoor", "minecraft:oak_wall_hanging_sign", "minecraft:oak_wall_sign", "minecraft:oak_wood", "minecraft:observer", "minecraft:obsidian", "minecraft:ochre_froglight", "minecraft:orange_banner", "minecraft:orange_bed", "minecraft:orange_candle", "minecraft:orange_candle_cake", "minecraft:orange_carpet", "minecraft:orange_concrete", "minecraft:orange_concrete_powder", "minecraft:orange_glazed_terracotta", "minecraft:orange_shulker_box", "minecraft:orange_stained_glass", "minecraft:orange_stained_glass_pane", "minecraft:orange_terracotta", "minecraft:orange_tulip", "minecraft:orange_wool", "minecraft:oxeye_daisy", "minecraft:oxidized_copper", "minecraft:oxidized_copper_bulb", "minecraft:oxidized_copper_door", "minecraft:oxidized_copper_grate", "minecraft:oxidized_copper_trapdoor", "minecraft:oxidized_cut_copper", "minecraft:oxidized_cut_copper_slab", "minecraft:oxidized_cut_copper_stairs", "minecraft:packed_ice", "minecraft:packed_mud", "minecraft:pearlescent_froglight", "minecraft:pink_banner", "minecraft:pink_bed", "minecraft:pink_candle", "minecraft:pink_candle_cake", "minecraft:pink_carpet", "minecraft:pink_concrete", "minecraft:pink_concrete_powder", "minecraft:pink_glazed_terracotta", "minecraft:pink_petals", "minecraft:pink_shulker_box", "minecraft:pink_stained_glass", "minecraft:pink_stained_glass_pane", "minecraft:pink_terracotta", "minecraft:pink_tulip", "minecraft:pink_wool", "minecraft:piston", "minecraft:piston_head", "minecraft:pitcher_crop", "minecraft:pitcher_plant", "minecraft:player_head", "minecraft:player_wall_head", "minecraft:podzol", "minecraft:pointed_dripstone", "minecraft:polished_andesite", "minecraft:polished_andesite_slab", "minecraft:polished_andesite_stairs", "minecraft:polished_basalt", "minecraft:polished_blackstone", "minecraft:polished_blackstone_brick_slab", "minecraft:polished_blackstone_brick_stairs", "minecraft:polished_blackstone_brick_wall", "minecraft:polished_blackstone_bricks", "minecraft:polished_blackstone_button", "minecraft:polished_blackstone_pressure_plate", "minecraft:polished_blackstone_slab", "minecraft:polished_blackstone_stairs", "minecraft:polished_blackstone_wall", "minecraft:polished_deepslate", "minecraft:polished_deepslate_slab", "minecraft:polished_deepslate_stairs", "minecraft:polished_deepslate_wall", "minecraft:polished_diorite", "minecraft:polished_diorite_slab", "minecraft:polished_diorite_stairs", "minecraft:polished_granite", "minecraft:polished_granite_slab", "minecraft:polished_granite_stairs", "minecraft:polished_tuff", "minecraft:polished_tuff_slab", "minecraft:polished_tuff_stairs", "minecraft:polished_tuff_wall", "minecraft:poppy", "minecraft:potatoes", "minecraft:powder_snow", "minecraft:powder_snow_cauldron", "minecraft:powered_rail", "minecraft:prismarine", "minecraft:prismarine_brick_slab", "minecraft:prismarine_brick_stairs", "minecraft:prismarine_bricks", "minecraft:prismarine_slab", "minecraft:prismarine_stairs", "minecraft:prismarine_wall", "minecraft:pumpkin", "minecraft:pumpkin_stem", "minecraft:purple_banner", "minecraft:purple_bed", "minecraft:purple_candle", "minecraft:purple_candle_cake", "minecraft:purple_carpet", "minecraft:purple_concrete", "minecraft:purple_concrete_powder", "minecraft:purple_glazed_terracotta", "minecraft:purple_shulker_box", "minecraft:purple_stained_glass", "minecraft:purple_stained_glass_pane", "minecraft:purple_terracotta", "minecraft:purple_wool", "minecraft:purpur_block", "minecraft:purpur_pillar", "minecraft:purpur_slab", "minecraft:purpur_stairs", "minecraft:quartz_block", "minecraft:quartz_bricks", "minecraft:quartz_pillar", "minecraft:quartz_slab", "minecraft:quartz_stairs", "minecraft:rail", "minecraft:red_banner", "minecraft:red_bed", "minecraft:red_candle", "minecraft:red_candle_cake", "minecraft:red_carpet", "minecraft:red_concrete", "minecraft:red_concrete_powder", "minecraft:red_glazed_terracotta", "minecraft:red_mushroom", "minecraft:red_mushroom_block", "minecraft:red_nether_brick_slab", "minecraft:red_nether_brick_stairs", "minecraft:red_nether_brick_wall", "minecraft:red_nether_bricks", "minecraft:red_sand", "minecraft:red_sandstone", "minecraft:red_sandstone_slab", "minecraft:red_sandstone_stairs", "minecraft:red_sandstone_wall", "minecraft:red_shulker_box", "minecraft:red_stained_glass", "minecraft:red_stained_glass_pane", "minecraft:red_terracotta", "minecraft:red_tulip", "minecraft:red_wool", "minecraft:redstone_block", "minecraft:redstone_lamp", "minecraft:redstone_ore", "minecraft:redstone_torch", "minecraft:redstone_wall_torch", "minecraft:redstone_wire", "minecraft:repeater", "minecraft:repeating_command_block", "minecraft:respawn_anchor", "minecraft:rooted_dirt", "minecraft:rose_bush", "minecraft:sand", "minecraft:sandstone", "minecraft:sandstone_slab", "minecraft:sandstone_stairs", "minecraft:sandstone_wall", "minecraft:scaffolding", "minecraft:sculk", "minecraft:sculk_catalyst", "minecraft:sculk_sensor", "minecraft:sculk_shrieker", "minecraft:sculk_vein", "minecraft:sea_lantern", "minecraft:sea_pickle", "minecraft:seagrass", "minecraft:shroomlight", "minecraft:shulker_box", "minecraft:skull", "minecraft:skull_wall", "minecraft:slime_block", "minecraft:small_amethyst_bud", "minecraft:small_dripleaf", "minecraft:smithing_table", "minecraft:smoker", "minecraft:smooth_basalt", "minecraft:smooth_quartz", "minecraft:smooth_quartz_slab", "minecraft:smooth_quartz_stairs", "minecraft:smooth_red_sandstone", "minecraft:smooth_red_sandstone_slab", "minecraft:smooth_red_sandstone_stairs", "minecraft:smooth_sandstone", "minecraft:smooth_sandstone_slab", "minecraft:smooth_sandstone_stairs", "minecraft:smooth_stone", "minecraft:smooth_stone_slab", "minecraft:snow", "minecraft:snow_block", "minecraft:soul_campfire", "minecraft:soul_fire", "minecraft:soul_lantern", "minecraft:soul_sand", "minecraft:soul_soil", "minecraft:soul_torch", "minecraft:soul_wall_torch", "minecraft:spawner", "minecraft:sponge", "minecraft:spore_blossom", "minecraft:spruce_button", "minecraft:spruce_door", "minecraft:spruce_fence", "minecraft:spruce_fence_gate", "minecraft:spruce_hanging_sign", "minecraft:spruce_leaves", "minecraft:spruce_log", "minecraft:spruce_planks", "minecraft:spruce_pressure_plate", "minecraft:spruce_sapling", "minecraft:spruce_sign", "minecraft:spruce_slab", "minecraft:spruce_stairs", "minecraft:spruce_trapdoor", "minecraft:spruce_wall_hanging_sign", "minecraft:spruce_wall_sign", "minecraft:spruce_wood", "minecraft:sticky_piston", "minecraft:stone", "minecraft:stone_brick_slab", "minecraft:stone_brick_stairs", "minecraft:stone_brick_wall", "minecraft:stone_bricks", "minecraft:stone_button", "minecraft:stone_pressure_plate", "minecraft:stone_slab", "minecraft:stone_stairs", "minecraft:stonecutter", "minecraft:stripped_acacia_log", "minecraft:stripped_acacia_wood", "minecraft:stripped_bamboo_block", "minecraft:stripped_birch_log", "minecraft:stripped_birch_wood", "minecraft:stripped_cherry_log", "minecraft:stripped_cherry_wood", "minecraft:stripped_crimson_hyphae", "minecraft:stripped_crimson_stem", "minecraft:stripped_dark_oak_log", "minecraft:stripped_dark_oak_wood", "minecraft:stripped_jungle_log", "minecraft:stripped_jungle_wood", "minecraft:stripped_mangrove_log", "minecraft:stripped_mangrove_wood", "minecraft:stripped_oak_log", "minecraft:stripped_oak_wood", "minecraft:stripped_spruce_log", "minecraft:stripped_spruce_wood", "minecraft:stripped_warped_hyphae", "minecraft:stripped_warped_stem", "minecraft:structure_block", "minecraft:structure_void", "minecraft:sugar_cane", "minecraft:sunflower", "minecraft:sweet_berry_bush", "minecraft:tall_grass", "minecraft:tall_seagrass", "minecraft:target", "minecraft:terracotta", "minecraft:tinted_glass", "minecraft:tnt", "minecraft:torch", "minecraft:torchflower", "minecraft:torchflower_crop", "minecraft:trapped_chest", "minecraft:tripwire", "minecraft:tripwire_hook", "minecraft:tube_coral", "minecraft:tube_coral_block", "minecraft:tube_coral_fan", "minecraft:tube_coral_wall_fan", "minecraft:tuff", "minecraft:tuff_brick_slab", "minecraft:tuff_brick_stairs", "minecraft:tuff_brick_wall", "minecraft:tuff_bricks", "minecraft:tuff_slab", "minecraft:tuff_stairs", "minecraft:tuff_wall", "minecraft:turtle_egg", "minecraft:twisting_vines", "minecraft:twisting_vines_plant", "minecraft:verdant_froglight", "minecraft:vine", "minecraft:void_air", "minecraft:wall_torch", "minecraft:warped_button", "minecraft:warped_door", "minecraft:warped_fence", "minecraft:warped_fence_gate", "minecraft:warped_fungus", "minecraft:warped_hanging_sign", "minecraft:warped_hyphae", "minecraft:warped_nylium", "minecraft:warped_planks", "minecraft:warped_pressure_plate", "minecraft:warped_roots", "minecraft:warped_sign", "minecraft:warped_slab", "minecraft:warped_stairs", "minecraft:warped_stem", "minecraft:warped_trapdoor", "minecraft:warped_wall_hanging_sign", "minecraft:warped_wall_sign", "minecraft:warped_wart_block", "minecraft:water", "minecraft:water_cauldron", "minecraft:waxed_copper_block", "minecraft:waxed_copper_bulb", "minecraft:waxed_copper_door", "minecraft:waxed_copper_grate", "minecraft:waxed_copper_trapdoor", "minecraft:waxed_cut_copper", "minecraft:waxed_cut_copper_slab", "minecraft:waxed_cut_copper_stairs", "minecraft:waxed_exposed_copper", "minecraft:waxed_exposed_copper_bulb", "minecraft:waxed_exposed_copper_door", "minecraft:waxed_exposed_copper_grate", "minecraft:waxed_exposed_copper_trapdoor", "minecraft:waxed_exposed_cut_copper", "minecraft:waxed_exposed_cut_copper_slab", "minecraft:waxed_exposed_cut_copper_stairs", "minecraft:waxed_oxidized_copper", "minecraft:waxed_oxidized_copper_bulb", "minecraft:waxed_oxidized_copper_door", "minecraft:waxed_oxidized_copper_grate", "minecraft:waxed_oxidized_copper_trapdoor", "minecraft:waxed_oxidized_cut_copper", "minecraft:waxed_oxidized_cut_copper_slab", "minecraft:waxed_oxidized_cut_copper_stairs", "minecraft:waxed_weathered_copper", "minecraft:waxed_weathered_copper_bulb", "minecraft:waxed_weathered_copper_door", "minecraft:waxed_weathered_copper_grate", "minecraft:waxed_weathered_copper_trapdoor", "minecraft:waxed_weathered_cut_copper", "minecraft:waxed_weathered_cut_copper_slab", "minecraft:waxed_weathered_cut_copper_stairs", "minecraft:weathered_copper", "minecraft:weathered_copper_bulb", "minecraft:weathered_copper_door", "minecraft:weathered_copper_grate", "minecraft:weathered_copper_trapdoor", "minecraft:weathered_cut_copper", "minecraft:weathered_cut_copper_slab", "minecraft:weathered_cut_copper_stairs", "minecraft:weeping_vines", "minecraft:weeping_vines_plant", "minecraft:wet_sponge", "minecraft:wheat", "minecraft:white_banner", "minecraft:white_bed", "minecraft:white_candle", "minecraft:white_candle_cake", "minecraft:white_carpet", "minecraft:white_concrete", "minecraft:white_concrete_powder", "minecraft:white_glazed_terracotta", "minecraft:white_shulker_box", "minecraft:white_stained_glass", "minecraft:white_stained_glass_pane", "minecraft:white_terracotta", "minecraft:white_tulip", "minecraft:white_wool", "minecraft:wither_rose", "minecraft:wither_skeleton_skull", "minecraft:wither_skeleton_wall_skull", "minecraft:yellow_banner", "minecraft:yellow_bed", "minecraft:yellow_candle", "minecraft:yellow_candle_cake", "minecraft:yellow_carpet", "minecraft:yellow_concrete", "minecraft:yellow_concrete_powder", "minecraft:yellow_glazed_terracotta", "minecraft:yellow_shulker_box", "minecraft:yellow_stained_glass", "minecraft:yellow_stained_glass_pane", "minecraft:yellow_terracotta", "minecraft:yellow_wool", "minecraft:zombie_head", "minecraft:zombie_wall_head"]
+        self.block_type = ttk.Combobox(tab, values=blocks, width=20)
+        self.block_type.set("minecraft:stone")
+        self.block_type.grid(row=3, column=1, padx=5, pady=5)
+        
+        # Способ замены
+        ttk.Label(tab, text="Способ замены:").grid(row=4, column=0, sticky=tk.W, padx=5, pady=5)
+        self.block_mode = ttk.Combobox(tab, values=["replace", "destroy", "keep"], width=18)
+        self.block_mode.set("replace")
+        self.block_mode.grid(row=4, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_setblock).grid(row=5, column=0, columnspan=2, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=6, column=0, sticky=tk.W, padx=5, pady=5)
+        self.block_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.block_output.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.block_output)).grid(row=8, column=0, columnspan=2, pady=5)
+        
+    def create_effect_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Эффекты")
+        
+        # Цель
+        ttk.Label(tab, text="Цель:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.effect_target = ttk.Combobox(tab, values=["@p", "@r", "@a", "Игрок"], width=20)
+        self.effect_target.set("@p")
+        self.effect_target.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Тип эффекта
+        ttk.Label(tab, text="Эффект:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        effects = ["minecraft:absorption", "minecraft:bad_omen", "minecraft:blindness", "minecraft:conduit_power", "minecraft:darkness", "minecraft:dolphins_grace", "minecraft:fire_resistance", "minecraft:glowing", "minecraft:haste", "minecraft:health_boost", "minecraft:hero_of_the_village", "minecraft:hunger", "minecraft:instant_damage", "minecraft:instant_health", "minecraft:invisibility", "minecraft:jump_boost", "minecraft:levitation", "minecraft:luck", "minecraft:mining_fatigue", "minecraft:nausea", "minecraft:night_vision", "minecraft:poison", "minecraft:regeneration", "minecraft:resistance", "minecraft:saturation", "minecraft:slow_falling", "minecraft:slowness", "minecraft:speed", "minecraft:strength", "minecraft:unluck", "minecraft:water_breathing", "minecraft:weakness", "minecraft:wither"]
+        self.effect_type = ttk.Combobox(tab, values=effects, width=20)
+        self.effect_type.set("minecraft:speed")
+        self.effect_type.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Уровень
+        ttk.Label(tab, text="Уровень (1-255):").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.effect_amplifier = ttk.Spinbox(tab, from_=1, to=255, width=18)
+        self.effect_amplifier.set(1)
+        self.effect_amplifier.grid(row=2, column=1, padx=5, pady=5)
+        
+        # Длительность
+        ttk.Label(tab, text="Длительность (сек):").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.effect_duration = ttk.Spinbox(tab, from_=1, to=3600, width=18)
+        self.effect_duration.set(30)
+        self.effect_duration.grid(row=3, column=1, padx=5, pady=5)
+        
+        # Скрыть частицы
+        self.effect_hide = tk.BooleanVar()
+        ttk.Checkbutton(tab, text="Скрыть частицы", variable=self.effect_hide).grid(row=4, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_effect).grid(row=5, column=0, columnspan=2, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=6, column=0, sticky=tk.W, padx=5, pady=5)
+        self.effect_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.effect_output.grid(row=7, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.effect_output)).grid(row=8, column=0, columnspan=2, pady=5)
+        
+    def create_time_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Время")
+        
+        # Режим
+        self.time_mode = tk.StringVar(value="set")
+        ttk.Radiobutton(tab, text="Установить", variable=self.time_mode, value="set").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Radiobutton(tab, text="Добавить", variable=self.time_mode, value="add").grid(row=0, column=1, padx=5, pady=5)
+        ttk.Radiobutton(tab, text="Запросить", variable=self.time_mode, value="query").grid(row=0, column=2, padx=5, pady=5)
+        
+        # Значение
+        ttk.Label(tab, text="Значение:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.time_value = ttk.Combobox(tab, values=["day", "night", "noon", "midnight", "0", "1000", "6000", "12000", "18000"], width=15)
+        self.time_value.set("day")
+        self.time_value.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_time).grid(row=2, column=0, columnspan=3, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.time_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.time_output.grid(row=4, column=0, columnspan=3, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.time_output)).grid(row=5, column=0, columnspan=3, pady=5)
+        
+    def create_weather_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Погода")
+        
+        # Тип погоды
+        self.weather_type = tk.StringVar(value="clear")
+        ttk.Radiobutton(tab, text="Ясно", variable=self.weather_type, value="clear").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Radiobutton(tab, text="Дождь", variable=self.weather_type, value="rain").grid(row=0, column=1, padx=5, pady=5)
+        ttk.Radiobutton(tab, text="Гроза", variable=self.weather_type, value="thunder").grid(row=0, column=2, padx=5, pady=5)
+        
+        # Длительность
+        ttk.Label(tab, text="Длительность (сек):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.weather_duration = ttk.Entry(tab, width=15)
+        self.weather_duration.insert(0, "")
+        self.weather_duration.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_weather).grid(row=2, column=0, columnspan=3, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.weather_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.weather_output.grid(row=4, column=0, columnspan=3, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.weather_output)).grid(row=5, column=0, columnspan=3, pady=5)
+        
+    def create_gamerule_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Правила игры")
+        
+        # Правила
+        ttk.Label(tab, text="Правило:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        gamerules = ["doDaylightCycle", "doMobSpawning", "doWeatherCycle", "keepInventory", 
+                     "mobGriefing", "doFireTick", "doEntityDrops", "doTileDrops",
+                     "commandBlockOutput", "naturalRegeneration", "doLimitedCrafting"]
+        self.gamerule_name = ttk.Combobox(tab, values=gamerules, width=25)
+        self.gamerule_name.set("doDaylightCycle")
+        self.gamerule_name.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Значение
+        ttk.Label(tab, text="Значение:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.gamerule_value = ttk.Combobox(tab, values=["true", "false"], width=23)
+        self.gamerule_value.set("true")
+        self.gamerule_value.grid(row=1, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_gamerule).grid(row=2, column=0, columnspan=2, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.gamerule_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.gamerule_output.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.gamerule_output)).grid(row=5, column=0, columnspan=2, pady=5)
+        
+    def create_clone_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Клонирование")
+        
+        # Первая точка
+        ttk.Label(tab, text="Первая точка (x1 y1 z1):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.clone_x1 = ttk.Entry(tab, width=8)
+        self.clone_x1.insert(0, "~")
+        self.clone_y1 = ttk.Entry(tab, width=8)
+        self.clone_y1.insert(0, "~")
+        self.clone_z1 = ttk.Entry(tab, width=8)
+        self.clone_z1.insert(0, "~")
+        ttk.Frame(tab, width=5).grid(row=0, column=1)
+        self.clone_x1.grid(row=0, column=2, padx=2)
+        self.clone_y1.grid(row=0, column=3, padx=2)
+        self.clone_z1.grid(row=0, column=4, padx=2)
+        
+        # Вторая точка
+        ttk.Label(tab, text="Вторая точка (x2 y2 z2):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.clone_x2 = ttk.Entry(tab, width=8)
+        self.clone_x2.insert(0, "~")
+        self.clone_y2 = ttk.Entry(tab, width=8)
+        self.clone_y2.insert(0, "~")
+        self.clone_z2 = ttk.Entry(tab, width=8)
+        self.clone_z2.insert(0, "~")
+        self.clone_x2.grid(row=1, column=2, padx=2)
+        self.clone_y2.grid(row=1, column=3, padx=2)
+        self.clone_z2.grid(row=1, column=4, padx=2)
+        
+        # Цель
+        ttk.Label(tab, text="Цель (x y z):").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.clone_target_x = ttk.Entry(tab, width=8)
+        self.clone_target_x.insert(0, "~")
+        self.clone_target_y = ttk.Entry(tab, width=8)
+        self.clone_target_y.insert(0, "~")
+        self.clone_target_z = ttk.Entry(tab, width=8)
+        self.clone_target_z.insert(0, "~")
+        self.clone_target_x.grid(row=2, column=2, padx=2)
+        self.clone_target_y.grid(row=2, column=3, padx=2)
+        self.clone_target_z.grid(row=2, column=4, padx=2)
+        
+        # Маска
+        ttk.Label(tab, text="Маска:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.clone_mask = ttk.Combobox(tab, values=["replace", "masked", "filtered"], width=15)
+        self.clone_mask.set("replace")
+        self.clone_mask.grid(row=3, column=2, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_clone).grid(row=4, column=0, columnspan=5, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=5, column=0, sticky=tk.W, padx=5, pady=5)
+        self.clone_output = scrolledtext.ScrolledText(tab, height=5, width=60)
+        self.clone_output.grid(row=6, column=0, columnspan=5, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.clone_output)).grid(row=7, column=0, columnspan=5, pady=5)
+        
+    def create_particle_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Частицы")
+        
+        # Тип частиц
+        ttk.Label(tab, text="Тип частиц:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        particles = ["minecraft:flame", "minecraft:smoke", "minecraft:heart", "minecraft:note", 
+                     "minecraft:portal", "minecraft:explosion", "minecraft:firework", "minecraft:dust"]
+        self.particle_type = ttk.Combobox(tab, values=particles, width=20)
+        self.particle_type.set("minecraft:flame")
+        self.particle_type.grid(row=0, column=1, padx=5, pady=5)
+        
+        # Координаты
+        ttk.Label(tab, text="Координаты (x y z):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
+        self.particle_x = ttk.Entry(tab, width=8)
+        self.particle_x.insert(0, "~")
+        self.particle_y = ttk.Entry(tab, width=8)
+        self.particle_y.insert(0, "~")
+        self.particle_z = ttk.Entry(tab, width=8)
+        self.particle_z.insert(0, "~")
+        self.particle_x.grid(row=1, column=1, padx=2)
+        self.particle_y.grid(row=1, column=2, padx=2)
+        self.particle_z.grid(row=1, column=3, padx=2)
+        
+        # Скорость и количество
+        ttk.Label(tab, text="Скорость:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
+        self.particle_speed = ttk.Entry(tab, width=10)
+        self.particle_speed.insert(0, "1")
+        self.particle_speed.grid(row=2, column=1, padx=5, pady=5)
+        
+        ttk.Label(tab, text="Количество:").grid(row=3, column=0, sticky=tk.W, padx=5, pady=5)
+        self.particle_count = ttk.Spinbox(tab, from_=1, to=1000, width=18)
+        self.particle_count.set(1)
+        self.particle_count.grid(row=3, column=1, padx=5, pady=5)
+        
+        # Кнопка генерации
+        ttk.Button(tab, text="Сгенерировать команду", command=self.generate_particle).grid(row=4, column=0, columnspan=4, pady=10)
+        
+        # Поле для вывода
+        ttk.Label(tab, text="Сгенерированная команда:").grid(row=5, column=0, sticky=tk.W, padx=5, pady=5)
+        self.particle_output = scrolledtext.ScrolledText(tab, height=5, width=50)
+        self.particle_output.grid(row=6, column=0, columnspan=4, padx=5, pady=5)
+        
+        ttk.Button(tab, text="Копировать в буфер", command=lambda: self.copy_to_clipboard(self.particle_output)).grid(row=7, column=0, columnspan=4, pady=5)
+        
+    def create_history_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="История")
+        
+        # Список истории
+        self.history_listbox = tk.Listbox(tab, height=20)
+        self.history_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Кнопки
+        button_frame = ttk.Frame(tab)
+        button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(button_frame, text="Копировать выбранную", command=self.copy_selected_history).pack(side=tk.LEFT, padx=2)
+        ttk.Button(button_frame, text="Очистить историю", command=self.clear_history).pack(side=tk.LEFT, padx=2)
+        
+    def add_to_history(self, command):
+        self.command_history.append(command)
+        if len(self.command_history) > 50:
+            self.command_history.pop(0)
+        self.update_history_list()
+        
+    def update_history_list(self):
+        self.history_listbox.delete(0, tk.END)
+        for cmd in self.command_history:
+            self.history_listbox.insert(tk.END, cmd)
+            
+    def copy_selected_history(self):
+        selection = self.history_listbox.curselection()
+        if selection:
+            command = self.history_listbox.get(selection[0])
+            self.root.clipboard_clear()
+            self.root.clipboard_append(command)
+            messagebox.showinfo("Успех", "Команда скопирована в буфер обмена")
+            
+    def clear_history(self):
+        self.command_history.clear()
+        self.update_history_list()
+        
+    def copy_to_clipboard(self, text_widget):
+        command = text_widget.get("1.0", tk.END).strip()
+        if command:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(command)
+            messagebox.showinfo("Успех", "Команда скопирована в буфер обмена")
+            
+    def generate_teleport(self):
+        target = self.tp_target.get()
+        x = self.tp_x.get()
+        y = self.tp_y.get()
+        z = self.tp_z.get()
+        yaw = self.tp_yaw.get()
+        pitch = self.tp_pitch.get()
+        
+        command = f"teleport {target} {x} {y} {z}"
+        
+        if yaw != "~" or pitch != "~":
+            command += f" {yaw} {pitch}"
+            
+        if self.tp_check.get():
+            command += " true"
+            
+        self.tp_output.delete("1.0", tk.END)
+        self.tp_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_give(self):
+        target = self.give_target.get()
+        if target == "Игрок":
+            player = self.player_name.get().strip()
+            if not player:
+                messagebox.showwarning("Ошибка", "Введите имя игрока!")
+                return
+            target = player
+            
+        item = self.give_item.get()
+        amount = self.give_amount.get()
+        nbt = self.give_nbt.get()
+        
+        command = f"give {target} {item}"
+        if nbt:
+            command += f"{nbt}"
+            
+        command +=f" {amount}"
+            
+        self.give_output.delete("1.0", tk.END)
+        self.give_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_summon(self):
+        entity = self.summon_entity.get()
+        x = self.summon_x.get()
+        y = self.summon_y.get()
+        z = self.summon_z.get()
+        nbt = self.summon_nbt.get()
+        
+        command = f"summon {entity} {x} {y} {z}"
+        if nbt:
+            command += f" {nbt}"
+            
+        self.summon_output.delete("1.0", tk.END)
+        self.summon_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_setblock(self):
+        x = self.block_x.get()
+        y = self.block_y.get()
+        z = self.block_z.get()
+        block = self.block_type.get()
+        mode = self.block_mode.get()
+        
+        command = f"setblock {x} {y} {z} {block} {mode}"
+        
+        self.block_output.delete("1.0", tk.END)
+        self.block_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_effect(self):
+        target = self.effect_target.get()
+        effect = self.effect_type.get()
+        duration = int(self.effect_duration.get()) * 20
+        amplifier = int(self.effect_amplifier.get()) - 1
+        hide = self.effect_hide.get()
+        
+        command = f"effect give {target} {effect} {duration} {amplifier}"
+        if hide:
+            command += " true"
+            
+        self.effect_output.delete("1.0", tk.END)
+        self.effect_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_time(self):
+        mode = self.time_mode.get()
+        value = self.time_value.get()
+        
+        time_values = {"day": 1000, "night": 13000, "noon": 6000, "midnight": 18000}
+        if value in time_values:
+            value = time_values[value]
+            
+        command = f"time {mode} {value}"
+        
+        self.time_output.delete("1.0", tk.END)
+        self.time_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_weather(self):
+        weather = self.weather_type.get()
+        duration = self.weather_duration.get()
+        
+        command = f"weather {weather}"
+        if duration:
+            command += f" {duration}"
+            
+        self.weather_output.delete("1.0", tk.END)
+        self.weather_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_gamerule(self):
+        rule = self.gamerule_name.get()
+        value = self.gamerule_value.get()
+        
+        command = f"gamerule {rule} {value}"
+        
+        self.gamerule_output.delete("1.0", tk.END)
+        self.gamerule_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_clone(self):
+        x1 = self.clone_x1.get()
+        y1 = self.clone_y1.get()
+        z1 = self.clone_z1.get()
+        x2 = self.clone_x2.get()
+        y2 = self.clone_y2.get()
+        z2 = self.clone_z2.get()
+        tx = self.clone_target_x.get()
+        ty = self.clone_target_y.get()
+        tz = self.clone_target_z.get()
+        mask = self.clone_mask.get()
+        
+        command = f"clone {x1} {y1} {z1} {x2} {y2} {z2} {tx} {ty} {tz} {mask}"
+        
+        self.clone_output.delete("1.0", tk.END)
+        self.clone_output.insert("1.0", command)
+        self.add_to_history(command)
+        
+    def generate_particle(self):
+        particle = self.particle_type.get()
+        x = self.particle_x.get()
+        y = self.particle_y.get()
+        z = self.particle_z.get()
+        speed = self.particle_speed.get()
+        count = self.particle_count.get()
+        
+        command = f"particle {particle} {x} {y} {z} 0 0 0 {speed} {count}"
+        
+        self.particle_output.delete("1.0", tk.END)
+        self.particle_output.insert("1.0", command)
+        self.add_to_history(command)
+
+def main():
+    root = tk.Tk()
+    app = MinecraftCommandGenerator(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
